@@ -26,3 +26,12 @@
 - natives 只发三个平台：`linux-x64`（自编，cargo feature `wayland-pipewire`）、`darwin-arm64`、`linux-arm64`
   （后两者复用官方同版本 npm 包里的 `.node`）。addon 版本在链接后写入，必须与 `X.Y.Z-zen.N` 一致。
 - 安装：`bun install -g @oh-my-pi-zen/pi-coding-agent`。
+
+### npm 发布流程
+
+- 手动运行 `.github/workflows/zen-release.yml`，或由其他 workflow 通过 `gh workflow run zen-release.yml` 触发 `workflow_dispatch`；不随 push 发布。
+- `zen_number` 指定 `N`；留空时查询 npm `latest`，同一 upstream 版本递增，否则从 `1` 开始。失败重跑时填写原 `N`，已存在的精确版本会跳过。
+- `bun scripts/zen/resolve-version.ts [N]` 输出 upstream 与 zen 版本。
+- `bun scripts/zen/prepare-publish-worktree.ts --version X.Y.Z-zen.N --output /tmp/zen-publish --linux-addon <带 pipewire 的 linux-x64 addon>` 创建独立暂存树，下载官方 arm64 addon、逐一盖章、改名、构建并用 `npm pack` 生成 tarball；源工作区不改名。
+- `bun scripts/zen/ci-release-publish.ts /tmp/zen-publish` 通过 npm CLI ≥ 11.5 的 OIDC trusted publishing 发布，显式使用 `--tag latest --access public`，不注入 npm token；暂存 manifest 的 `repository.url` 指向本 fork，与 provenance 来源一致。
+- 发布集合为 12 个 workspace 包（`pi-utils`、`pi-wire`、`omptype`、`pi-catalog`、`pi-ai`、`pi-natives`、`pi-tui`、`pi-mnemopi`、`snapcompact`、`omp-stats`、`pi-agent-core`、`pi-coding-agent`）及三个 native leaf；发现新增可发布 workspace 包时中止，先确认发布范围。leaf 先发，依赖者随后，coding-agent 最后。
