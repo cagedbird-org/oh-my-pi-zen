@@ -1,0 +1,93 @@
+# Publish-time staging keeps the upstream workspace identity unchanged.
+# Addons are cached by Rust inputs and restamped with the selected zen version.
+name: zen-release
+
+on:
+   workflow_dispatch:
+      inputs:
+         zen_number:
+            description: 'Zen release number N (empty: increment npm latest for this upstream version)'
+            required: false
+            type: string
+
+concurrency:
+   group: zen-release
+   cancel-in-progress: false
+
+permissions:
+   contents: read
+   id-token: write
+
+env:
+   ADDON: packages/natives/native/pi_natives.linux-x64-modern.node
+
+jobs:
+   release:
+      runs-on: ubuntu-24.04
+      steps:
+         - uses: actions/checkout@v4
+         - uses: oven-sh/setup-bun@v2
+         - uses: actions/setup-node@v4
+           with:
+              node-version: '24'
+         - name: Install OIDC-capable npm
+           run: npm install --global npm@11
+
+         - name: Resolve zen version
+           id: meta
+           env:
+              ZEN_NUMBER: ${{ inputs.zen_number }}
+           run: bun scripts/zen/resolve-version.ts "$ZEN_NUMBER" >> "$GITHUB_OUTPUT"
+
+         - name: Restore bun store
+           uses: actions/cache@v4
+           with:
+              path: ~/.bun/install/cache
+              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+              restore-keys: bun-${{ runner.os }}-
+         - run: bun install --frozen-lockfile
+
+         - name: Restore linux addon
+           id: addon
+           uses: actions/cache@v4
+           with:
+              path: ${{ env.ADDON }}
+              key: zen-addon-linux-x64-modern-pipewire-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**') }}
+
+         # The cached addon still links PipeWire while the npm bundle builds.
+         - name: Install pipewire runtime
+           run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev
+
+         - name: Install native build deps
+           if: steps.addon.outputs.cache-hit != 'true'
+           run: sudo apt-get install -y --no-install-recommends libclang-dev pkg-config cmake
+
+         - name: Cache cargo dependencies
+           if: steps.addon.outputs.cache-hit != 'true'
+           uses: Swatinem/rust-cache@v2
+           with:
+              shared-key: natives-linux-x64
+
+         - name: Build linux addon
+           if: steps.addon.outputs.cache-hit != 'true'
+           env:
+              OMP_NATIVE_FEATURES: wayland-pipewire
+              OMP_NATIVE_CARGO_PROFILE: ci
+           run: bun --cwd=packages/natives run build
+
+         - name: Test release transforms
+           run: bun test scripts/zen/release.test.ts
+
+         - name: Stage and pack all zen packages
+           env:
+              ZEN_VERSION: ${{ steps.meta.outputs.version }}
+           run: >-
+              bun scripts/zen/prepare-publish-worktree.ts
+              --version "$ZEN_VERSION"
+              --output "$RUNNER_TEMP/zen-publish"
+              --linux-addon "$ADDON"
+
+         # These packages have trusted publishers for this workflow. Do not
+         # configure a registry token: npm must validate those OIDC publishers.
+         - name: Publish to npm with OIDC
+           run: bun scripts/zen/ci-release-publish.ts "$RUNNER_TEMP/zen-publish"
