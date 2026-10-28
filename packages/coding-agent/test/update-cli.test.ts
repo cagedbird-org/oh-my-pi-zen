@@ -623,13 +623,13 @@ describe("update-cli package manager commands", () => {
 	});
 
 	it("pins npm package installs to the official registry and the checked native package versions", () => {
-		const args = buildNpmInstallArgs("16.3.15", "win32-x64");
+		const args = buildNpmInstallArgs("16.3.15", "linux-x64");
 
 		expect(args.slice(0, 2)).toEqual(["install", "-g"]);
 		expect(args).toContain("--registry=https://registry.npmjs.org/");
-		expect(args).toContain("@oh-my-pi/pi-coding-agent@16.3.15");
-		expect(args).toContain("@oh-my-pi/pi-natives@16.3.15");
-		expect(args).toContain("@oh-my-pi/pi-natives-win32-x64@16.3.15");
+		expect(args).toContain("@oh-my-pi-zen/pi-coding-agent@16.3.15");
+		expect(args).toContain("@oh-my-pi-zen/pi-natives@16.3.15");
+		expect(args).toContain("@oh-my-pi-zen/pi-natives-linux-x64@16.3.15");
 	});
 
 	it("passes --minimum-release-age=0 to bun installs unless the installed bun predates the flag", () => {
@@ -638,11 +638,11 @@ describe("update-cli package manager commands", () => {
 		const legacy = buildBunInstallArgs(
 			"16.3.15",
 			"linux-x64",
-			{ pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
+			{ pkg: "@oh-my-pi-zen/pi-coding-agent", natives: "@oh-my-pi-zen/pi-natives" },
 			{ supportsReleaseAgeOverride: false },
 		);
 		expect(legacy).not.toContain("--minimum-release-age=0");
-		expect(legacy).toContain("@oh-my-pi/pi-coding-agent@16.3.15");
+		expect(legacy).toContain("@oh-my-pi-zen/pi-coding-agent@16.3.15");
 	});
 
 	it("overrides ambient npm release-age settings with the same key, never with before", () => {
@@ -773,26 +773,26 @@ describe("update-cli npm rename contract", () => {
 	it("adds --force to npm argv only for rename migrations so the old package's bin can be clobbered", () => {
 		const packages = { pkg: "@new/omp", natives: "@new/natives" };
 		expect(buildNpmInstallArgs("17.0.0", "linux-x64", packages, { force: true })).toContain("--force");
-		expect(buildNpmInstallArgs("16.3.15", "win32-x64")).not.toContain("--force");
+		expect(buildNpmInstallArgs("16.3.15", "linux-x64")).not.toContain("--force");
 	});
 
 	it("removes the old agent package and its natives companions when both names moved", () => {
 		const packages = { pkg: "@new/omp", natives: "@new/natives" };
 		expect(buildRenameCleanupPackages(packages, "darwin-arm64")).toEqual([
-			"@oh-my-pi/pi-coding-agent",
-			"@oh-my-pi/pi-natives",
-			"@oh-my-pi/pi-natives-darwin-arm64",
+			"@oh-my-pi-zen/pi-coding-agent",
+			"@oh-my-pi-zen/pi-natives",
+			"@oh-my-pi-zen/pi-natives-darwin-arm64",
 		]);
 		expect(buildRenameCleanupPackages(packages, "linux-arm")).toEqual([
-			"@oh-my-pi/pi-coding-agent",
-			"@oh-my-pi/pi-natives",
+			"@oh-my-pi-zen/pi-coding-agent",
+			"@oh-my-pi-zen/pi-natives",
 		]);
 	});
 
 	it("keeps the natives packages on an agent-only rename so cleanup cannot strip the addon the new install pinned", () => {
-		const packages = { pkg: "@new/omp", natives: "@oh-my-pi/pi-natives" };
-		expect(buildRenameCleanupPackages(packages, "darwin-arm64")).toEqual(["@oh-my-pi/pi-coding-agent"]);
-		expect(buildRenameCleanupPackages(packages, "linux-arm")).toEqual(["@oh-my-pi/pi-coding-agent"]);
+		const packages = { pkg: "@new/omp", natives: "@oh-my-pi-zen/pi-natives" };
+		expect(buildRenameCleanupPackages(packages, "darwin-arm64")).toEqual(["@oh-my-pi-zen/pi-coding-agent"]);
+		expect(buildRenameCleanupPackages(packages, "linux-arm")).toEqual(["@oh-my-pi-zen/pi-coding-agent"]);
 	});
 });
 
@@ -911,21 +911,21 @@ describe("update-cli bun install command", () => {
 			"--no-cache",
 			"--minimum-release-age=0",
 			"--registry=https://registry.npmjs.org/",
-			"@oh-my-pi/pi-coding-agent@15.7.6",
+			"@oh-my-pi-zen/pi-coding-agent@15.7.6",
 		]);
 	});
 
 	it("pins the native addon core and the platform-specific leaf to the same version so the loader sentinel cannot drift on supported tags", () => {
 		// Regression: bun install -g <pkg>@<v> would update only the top-level
-		// package, leaving @oh-my-pi/pi-natives and @oh-my-pi/pi-natives-<tag>
+		// package, leaving @oh-my-pi-zen/pi-natives and @oh-my-pi-zen/pi-natives-<tag>
 		// at their previous version. The next launch then loaded a stale .node
 		// file and aborted at validateLoadedBindings with `The .node file on
 		// disk is from a different release than this loader`. See
 		// https://github.com/can1357/oh-my-pi/issues/1824.
-		for (const tag of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"]) {
+		for (const tag of ["linux-x64", "linux-arm64", "darwin-arm64"]) {
 			const args = buildBunInstallArgs("15.9.0", tag);
-			expect(args).toContain("@oh-my-pi/pi-natives@15.9.0");
-			expect(args).toContain(`@oh-my-pi/pi-natives-${tag}@15.9.0`);
+			expect(args).toContain("@oh-my-pi-zen/pi-natives@15.9.0");
+			expect(args).toContain(`@oh-my-pi-zen/pi-natives-${tag}@15.9.0`);
 		}
 	});
 
@@ -936,8 +936,8 @@ describe("update-cli bun install command", () => {
 		// pipeline doesn't publish, otherwise bun aborts with EBADPLATFORM
 		// and hides the real diagnostic from `loadNative`'s aggregated error.
 		const args = buildBunInstallArgs("15.9.0", "linux-arm");
-		expect(args).toContain("@oh-my-pi/pi-natives@15.9.0");
-		expect(args.some(arg => arg.startsWith("@oh-my-pi/pi-natives-"))).toBe(false);
+		expect(args).toContain("@oh-my-pi-zen/pi-natives@15.9.0");
+		expect(args.some(arg => arg.startsWith("@oh-my-pi-zen/pi-natives-"))).toBe(false);
 	});
 
 	it("derives global node_modules from supported Bun locations with the explicit global directory taking precedence", () => {
@@ -1862,7 +1862,7 @@ describe("update-cli manager update recovery", () => {
 	const release: ReleaseInfo = {
 		tag: "v18.0.1",
 		version: "18.0.1",
-		packages: { pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
+		packages: { pkg: "@oh-my-pi-zen/pi-coding-agent", natives: "@oh-my-pi-zen/pi-natives" },
 		registry: "https://registry.npmjs.org/",
 	};
 	const launcherPath = "C:/Users/test/AppData/Roaming/npm/omp.cmd";

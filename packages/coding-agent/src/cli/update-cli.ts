@@ -41,8 +41,9 @@ import {
 } from "./npm-registry";
 
 import { cfgUpdateChannel } from "../modes/settings";
+import { ZEN_NATIVE_TAGS, ZEN_RELEASE_DIST, ZEN_NATIVES_PACKAGE, ZEN_PACKAGE, zenUpdateTarget } from "./zen-update";
 
-const PACKAGE = "@oh-my-pi/pi-coding-agent";
+const PACKAGE = ZEN_PACKAGE;
 const HOMEBREW_FORMULA = "can1357/tap/omp";
 const MISE_TOOL = "github:can1357/oh-my-pi";
 const NIX_STORE_DIR = "/nix/store";
@@ -55,7 +56,7 @@ const BINARY_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
  * disk; see {@link buildBunInstallArgs} for why this must be installed
  * explicitly rather than inherited as a transitive dependency.
  */
-const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
+const NATIVES_PACKAGE = ZEN_NATIVES_PACKAGE;
 
 /**
  * Platform tags the release pipeline publishes as
@@ -64,14 +65,7 @@ const NATIVES_PACKAGE = "@oh-my-pi/pi-natives";
  * `packages/natives/scripts/gen-npm-packages.ts`; kept here as the local
  * source of truth so the update path stays free of cross-package imports.
  */
-const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = new Set([
-	"linux-x64",
-	"linux-arm64",
-	"darwin-x64",
-	"darwin-arm64",
-	"win32-x64",
-	"win32-arm64",
-]);
+const SUPPORTED_NATIVE_TAGS: ReadonlySet<string> = ZEN_NATIVE_TAGS;
 
 function currentNativeTag(): string {
 	return `${process.platform}-${process.arch}`;
@@ -822,7 +816,7 @@ export async function getLatestRelease(
 	return {
 		tag: `v${latest.version}`,
 		version: latest.version,
-		dist: resolveReleaseDist(latest.manifest),
+		dist: ZEN_RELEASE_DIST,
 		packages,
 		registry: registry.url,
 	};
@@ -2317,6 +2311,7 @@ export async function runUpdateCommand(opts: {
 	} catch (err) {
 		targetError = err;
 	}
+	target = zenUpdateTarget(target);
 	if (target?.method === "binary") {
 		await runBinaryUpdate(target, targetError, request);
 	} else if (!target && isCompiledBinary()) {
