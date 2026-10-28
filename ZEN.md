@@ -33,5 +33,11 @@
 - `zen_number` 指定 `N`；留空时查询 npm `latest`，同一 upstream 版本递增，否则从 `1` 开始。失败重跑时填写原 `N`，已存在的精确版本会跳过。
 - `bun scripts/zen/resolve-version.ts [N]` 输出 upstream 与 zen 版本。
 - `bun scripts/zen/prepare-publish-worktree.ts --version X.Y.Z-zen.N --output /tmp/zen-publish --linux-addon <带 pipewire 的 linux-x64 addon>` 创建独立暂存树，下载官方 arm64 addon、逐一盖章、改名、构建并用 `npm pack` 生成 tarball；源工作区不改名。
-- `bun scripts/zen/ci-release-publish.ts /tmp/zen-publish` 通过 npm CLI ≥ 11.5 的 OIDC trusted publishing 发布，显式使用 `--tag latest --access public`，不注入 npm token；暂存 manifest 的 `repository.url` 指向本 fork，与 provenance 来源一致。
-- 发布集合为 12 个 workspace 包（`pi-utils`、`pi-wire`、`omptype`、`pi-catalog`、`pi-ai`、`pi-natives`、`pi-tui`、`pi-mnemopi`、`snapcompact`、`omp-stats`、`pi-agent-core`、`pi-coding-agent`）及三个 native leaf；发现新增可发布 workspace 包时中止，先确认发布范围。leaf 先发，依赖者随后，coding-agent 最后。
+- `bun scripts/zen/ci-release-publish.ts /tmp/zen-publish` 使用 npm CLI ≥ 11.5，显式 `--tag latest --access public`。原有 15 个包通过 OIDC 发布，npm 子进程不带 token；`@oh-my-pi-zen/collab-web` 单独从仓库 `NPM_TOKEN` secret 获取 token，通过专属 userconfig 和 `NODE_AUTH_TOKEN` 发布。暂存 manifest 的 `repository.url` 指向本 fork，与 provenance 来源一致。发布后 best-effort 请求 npmmirror 同步。
+- 发布集合为 12 个 workspace 包（`pi-utils`、`pi-wire`、`omptype`、`pi-catalog`、`pi-ai`、`pi-natives`、`pi-tui`、`pi-mnemopi`、`snapcompact`、`omp-stats`、`pi-agent-core`、`pi-coding-agent`）、三个 native leaf，以及同版本的 `collab-web` 静态包（仅生产构建与许可证，去掉 umami）。发现其他新增可发布 workspace 包时中止，先确认发布范围。leaf 先发，依赖者随后，coding-agent 最后。
+
+### collab-web 自托管
+
+- `scripts/zen/collab-web-mirror.py` 安装到 bj-edge 的 `/usr/local/libexec/omp-collab-web-mirror`，由原有同名 systemd timer/service 运行；沙箱写入范围仍只有 `/srv/omp-collab-web`。
+- 优先用 npmmirror 的 `latest` 元数据，同查 npm 以选择较新版本；tarball 校验 sha512 后安装到 `releases/<version>`，原子切换 `current`，保留三版。缺包或校验失败保留现站。
+- 测试可设置 `OMP_COLLAB_WEB_ROOT` 与逗号分隔的 `OMP_COLLAB_WEB_REGISTRIES`，在 scratch 目录使用本地 registry fixture，不改线上内容。

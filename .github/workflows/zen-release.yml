@@ -87,7 +87,8 @@ jobs:
               --output "$RUNNER_TEMP/zen-publish"
               --linux-addon "$ADDON"
 
-         # These packages have trusted publishers for this workflow. Do not
-         # configure a registry token: npm must validate those OIDC publishers.
-         - name: Publish to npm with OIDC
+         # Established packages use OIDC; only collab-web receives token auth.
+         - name: Publish zen packages
+           env:
+              COLLAB_WEB_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
            run: bun scripts/zen/ci-release-publish.ts "$RUNNER_TEMP/zen-publish"
