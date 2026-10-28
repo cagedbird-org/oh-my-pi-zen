@@ -1,0 +1,9 @@
+# zen 补丁的测试清单：每行一个路径，# 开头为注释。新增 zen 补丁时在此追加。
+# zen-follow.yml 与 zen-release.yml 共用，由 scripts/zen/run-tests.ts 读取。
+scripts/zen/release.test.ts
+scripts/zen/follow.test.ts
+packages/coding-agent/test/cli/zen-update.test.ts
+packages/coding-agent/test/cli/update-cli.test.ts
+packages/coding-agent/test/update-cli.test.ts
+packages/coding-agent/test/collab
+packages/collab-web/test
