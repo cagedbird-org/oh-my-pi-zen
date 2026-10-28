@@ -75,8 +75,8 @@ jobs:
               OMP_NATIVE_CARGO_PROFILE: ci
            run: bun --cwd=packages/natives run build
 
-         - name: Test release transforms
-           run: bun test scripts/zen/release.test.ts
+         - name: Zen tests
+           run: bun scripts/zen/run-tests.ts
 
          - name: Stage and pack all zen packages
            env:
