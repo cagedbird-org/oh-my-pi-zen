@@ -153,6 +153,14 @@ When a guest joins during an assistant turn, that in-flight turn appears on the 
 
 Set `collab.webUrl` when the browser UI is hosted separately from the websocket relay. When empty, `/collab` derives `http(s)://host[:port]` from `collab.relayUrl`; explicit web UI URLs must use `https://` except for localhost/loopback `http://` development origins, and cannot contain a query string or fragment. The generated browser URL still carries the relay-specific collab link in the fragment.
 
+### Large sessions
+
+The web client requests a bounded tail first and reaches Live without downloading the full session. Scroll near the top or use **show earlier** to fetch the preceding page through `fetch-transcript`; completed pages are prepended together while preserving the visible scroll anchor. Pages contain at most 100 entries and normally at most 256 KiB of replicated JSON. Starts align to user turns within that budget; an oversized turn cannot expand the page. A single entry can exceed the page budget but remains bounded by the existing 1 MiB replication ceiling.
+
+Optional protocol-v3 `hello.capabilities` negotiate `tail` and `compression: ["deflate"]`. A tail `welcome` reports the total `entryCount` and `snapshotStart`; `snapshot-chunk` delivers only that suffix. History requests carry an exclusive index and boundary entry ID, so a replaced transcript produces an explicit rejoin error rather than mixing histories. Deflate uses browser-native `DecompressionStream`, with no WASM dependency. It runs before AES-GCM; the IV, authentication tag and relay envelope are unchanged. Only targeted replies to an advertising peer are compressed; broadcasts remain ordinary sealed JSON so legacy and new guests can coexist. Clients without capabilities receive the complete, uncompressed snapshot.
+The CLI guest negotiates deflate but keeps the complete transcript for its local replica, terminal scrollback, `/dump` and `/export`. Tail-first and backward lazy history are browser capabilities only.
+
+
 ## Settings
 
 | Setting               | Default               | Meaning                                                                                                        |

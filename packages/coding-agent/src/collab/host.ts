@@ -15,6 +15,8 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type {
 	BusChannel,
+	CollabCapabilities,
+	TranscriptHistoryRequest,
 	CollabUiRequest,
 	CollabUiRequestDraft,
 	CollabUiResponseValue,
@@ -64,6 +66,7 @@ import {
 	serializeReplicatedEntry,
 	serializeReplicatedEvent,
 } from "./replication-shrink";
+import { selectTranscriptPage } from "./transcript-history";
 
 /** Events that change the footer state guests render. */
 const STATE_TRIGGER_EVENTS: Record<string, true> = {
@@ -744,7 +747,7 @@ export class CollabHost {
 		if (!this.#guestTrafficAllowed()) return;
 		switch (frame.t) {
 			case "hello":
-				this.#handleHello(frame.name, frame.proto, frame.writeToken, fromPeer);
+				this.#handleHello(frame.name, frame.proto, frame.writeToken, fromPeer, frame.capabilities);
 				break;
 			case "prompt":
 				if (this.#rejectWhileStarting("prompting", fromPeer)) break;
@@ -759,7 +762,7 @@ export class CollabHost {
 				this.#handleAgentCmd(frame.cmd, frame.agentId, frame.text, fromPeer);
 				break;
 			case "fetch-transcript":
-				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer);
+				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer, frame.history);
 				break;
 			default:
 				logger.debug("collab host ignoring unexpected frame", { type: frame.t, fromPeer });
@@ -793,7 +796,13 @@ export class CollabHost {
 		return true;
 	}
 
-	#handleHello(name: string, proto: number, writeToken: string | undefined, fromPeer: number): void {
+	#handleHello(
+		name: string,
+		proto: number,
+		writeToken: string | undefined,
+		fromPeer: number,
+		capabilities?: CollabCapabilities,
+	): void {
 		if (this.#ctx.session.isSessionTransitioning) {
 			this.#send({ t: "error", message: "Session transition in progress; join again when it completes" }, fromPeer);
 			return;
@@ -818,7 +827,11 @@ export class CollabHost {
 		// copy. Chunk frames are assembled from these strings only as the
 		// transport drains.
 		const snapshot = this.#ctx.sessionManager.snapshotForReplication();
-		const snapshotEntries = this.#serializeSnapshotEntries(snapshot.entries.filter(isWireSessionEntry));
+		const entries = snapshot.entries.filter(isWireSessionEntry);
+		const page = capabilities?.tail === true ? selectTranscriptPage(entries) : null;
+		const snapshotEntries = page ?? this.#serializeSnapshotEntries(entries);
+		const compression = capabilities?.compression?.includes("deflate") ? "deflate" : undefined;
+		socket.setPeerCompression(fromPeer, compression !== undefined);
 		const state = this.#buildState();
 		// State broadcasts pause while no guest is joined, so the dedupe baseline
 		// may predate this welcome; with no other peer to keep current, the welcome
@@ -831,7 +844,9 @@ export class CollabHost {
 				header: snapshot.header,
 				state,
 				agents: this.#snapshotAgents(),
-				entryCount: snapshotEntries.json.length,
+				entryCount: page ? entries.length : snapshotEntries.json.length,
+				snapshotStart: page?.start,
+				compression,
 				readOnly: canWrite ? undefined : true,
 			},
 			fromPeer,
@@ -1224,9 +1239,40 @@ export class CollabHost {
 	}
 
 	/** Incremental transcript read mirroring the hub's readFileIncremental contract. */
-	async #handleFetchTranscript(reqId: number, agentId: string, fromByte: number, fromPeer: number): Promise<void> {
+	async #handleFetchTranscript(
+		reqId: number,
+		agentId: string,
+		fromByte: number,
+		fromPeer: number,
+		history?: TranscriptHistoryRequest,
+	): Promise<void> {
 		const reply = (text: string, newSize: number, error?: string) =>
 			this.#send({ t: "transcript", reqId, text, newSize, error }, fromPeer);
+		if (history) {
+			try {
+				const entries = this.#ctx.sessionManager.snapshotForReplication().entries.filter(isWireSessionEntry);
+				if (entries[history.before]?.id !== history.beforeId)
+					throw new Error("transcript changed; rejoin to load history");
+				const page = selectTranscriptPage(entries, history.before);
+				this.#send(
+					{
+						t: "transcript",
+						reqId,
+						text: "",
+						newSize: 0,
+						history: {
+							start: page.start,
+							before: page.before,
+							entries: page.json.map(json => JSON.parse(json) as WireSessionEntry),
+						},
+					},
+					fromPeer,
+				);
+			} catch (error) {
+				reply("", fromByte, String(error));
+			}
+			return;
+		}
 		const ref = AgentRegistry.global().get(agentId);
 		if (!ref?.sessionFile || ref.kind === "advisor") {
 			reply("", fromByte, "no transcript available");

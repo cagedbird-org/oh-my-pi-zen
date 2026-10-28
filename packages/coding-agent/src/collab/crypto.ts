@@ -5,12 +5,11 @@
  * Sealed layout: `[12B IV][ciphertext+tag]`.
  */
 import { ROOM_KEY_BYTES, WRITE_TOKEN_BYTES } from "@oh-my-pi/pi-wire";
+import { decodeCollabPayload, encodeCollabPayload } from "@oh-my-pi/pi-wire/collab-compression";
 import type { CollabFrame } from "./protocol";
 
 const AES_ALGORITHM = "AES-GCM";
 const IV_LENGTH = 12;
-const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
 
 export function generateRoomKey(): Uint8Array {
 	const key = new Uint8Array(ROOM_KEY_BYTES);
@@ -35,10 +34,10 @@ export async function seal(key: CryptoKey, frame: CollabFrame): Promise<Uint8Arr
 	return sealSerialized(key, JSON.stringify(frame));
 }
 
-export async function sealSerialized(key: CryptoKey, frame: string): Promise<Uint8Array> {
+export async function sealSerialized(key: CryptoKey, frame: string, deflate = false): Promise<Uint8Array> {
 	const iv = new Uint8Array(IV_LENGTH);
 	crypto.getRandomValues(iv);
-	const plaintext = TEXT_ENCODER.encode(frame);
+	const plaintext = asStrict(await encodeCollabPayload(frame, deflate));
 	const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: AES_ALGORITHM, iv }, key, plaintext));
 	const out = new Uint8Array(IV_LENGTH + ciphertext.byteLength);
 	out.set(iv, 0);
@@ -54,7 +53,7 @@ export async function open(key: CryptoKey, data: Uint8Array): Promise<CollabFram
 	const iv = asStrict(data.subarray(0, IV_LENGTH));
 	const ciphertext = asStrict(data.subarray(IV_LENGTH));
 	const plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: AES_ALGORITHM, iv }, key, ciphertext));
-	return JSON.parse(TEXT_DECODER.decode(plaintext)) as CollabFrame;
+	return JSON.parse(await decodeCollabPayload(plaintext)) as CollabFrame;
 }
 
 function asStrict(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
