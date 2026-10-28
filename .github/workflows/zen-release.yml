@@ -1,0 +1,108 @@
+# oh-my-pi-zen release: builds omp for linux-x64 (addon with wayland-pipewire)
+# and darwin-arm64 (npm prebuilt addon), then publishes GitHub release
+# v<version>-zen. Upstream workflows stay untouched and are disabled in the
+# repository settings.
+#
+# The addon's release version is stamped after linking, so the compiled
+# addon is cached by a hash of the Rust inputs and only restamped when just
+# the version moves. Caches are written on zen/main (the default branch),
+# where every later run can read them.
+name: zen-release
+
+on:
+   push:
+      branches: [zen/main]
+   workflow_dispatch:
+
+concurrency:
+   group: zen-release
+   cancel-in-progress: true
+
+permissions:
+   contents: write
+
+env:
+   ADDON: packages/natives/native/pi_natives.linux-x64-modern.node
+
+jobs:
+   release:
+      runs-on: ubuntu-24.04
+      steps:
+         - uses: actions/checkout@v4
+         - uses: oven-sh/setup-bun@v2
+
+         - name: Read version
+           id: meta
+           run: echo "version=$(jq -r .version packages/natives/package.json)" >> "$GITHUB_OUTPUT"
+
+         - name: Restore bun store
+           uses: actions/cache@v4
+           with:
+              path: ~/.bun/install/cache
+              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+              restore-keys: bun-${{ runner.os }}-
+         - run: bun install --frozen-lockfile
+
+         # ---- linux-x64 addon: reuse when Rust inputs are unchanged ----
+         - name: Restore linux addon
+           id: addon
+           uses: actions/cache@v4
+           with:
+              path: ${{ env.ADDON }}
+              key: zen-addon-linux-x64-modern-pipewire-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**') }}
+
+         - name: Install native build deps
+           if: steps.addon.outputs.cache-hit != 'true'
+           run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libclang-dev pkg-config cmake
+
+         - name: Cache cargo dependencies
+           if: steps.addon.outputs.cache-hit != 'true'
+           uses: Swatinem/rust-cache@v2
+           with:
+              shared-key: natives-linux-x64
+
+         - name: Build linux addon
+           if: steps.addon.outputs.cache-hit != 'true'
+           env:
+              OMP_NATIVE_FEATURES: wayland-pipewire
+              OMP_NATIVE_CARGO_PROFILE: ci
+           run: bun --cwd=packages/natives run build
+
+         - name: Stamp linux addon
+           run: |
+              test -f "$ADDON"
+              bun scripts/stamp-native-version.ts "$ADDON" --version "${{ steps.meta.outputs.version }}"
+
+         # ---- darwin-arm64 addon: npm prebuilt of the same version ----
+         - name: Fetch darwin addon
+           run: |
+              set -euo pipefail
+              tarball="$(npm view "@oh-my-pi/pi-natives-darwin-arm64@${{ steps.meta.outputs.version }}" dist.tarball)"
+              curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
+              cp "$RUNNER_TEMP/package/pi_natives.darwin-arm64.node" packages/natives/native/
+
+         # ---- omp binaries ----
+         - name: Build binaries
+           env:
+              RELEASE_TARGETS: linux-x64,darwin-arm64
+           run: bun run ci:release:build-binaries
+         - name: Sign darwin binary (ad hoc)
+           run: bash scripts/ci-macos-sign.sh packages/coding-agent/binaries/omp-darwin-arm64
+         - name: Smoke test linux binary
+           run: packages/coding-agent/binaries/omp-linux-x64 --smoke-test
+
+         - name: Publish release
+           env:
+              GH_TOKEN: ${{ github.token }}
+              TAG: v${{ steps.meta.outputs.version }}-zen
+           run: |
+              set -euo pipefail
+              mkdir -p dist
+              cp packages/coding-agent/binaries/omp-linux-x64 packages/coding-agent/binaries/omp-darwin-arm64 "$ADDON" dist/
+              (cd dist && sha256sum * > SHA256SUMS)
+              if gh release view "$TAG" >/dev/null 2>&1; then
+                gh release upload "$TAG" dist/* --clobber
+              else
+                gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" \
+                  --notes "oh-my-pi ${{ steps.meta.outputs.version }} + zen patches ($GITHUB_SHA)"
+              fi
