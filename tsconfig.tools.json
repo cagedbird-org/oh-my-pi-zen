@@ -6,6 +6,11 @@
 		"emitDeclarationOnly": false,
 		"allowImportingTsExtensions": true
 	},
-	"include": ["scripts", "packages/natives/scripts/gen-npm-packages.ts"],
+	"include": [
+		"scripts",
+		"packages/natives/scripts/gen-npm-packages.ts",
+		"packages/collab-web/scripts/build-export-viewer.ts",
+		"packages/coding-agent/src/export/html/web-palette.ts"
+	],
 	"exclude": ["node_modules"]
 }

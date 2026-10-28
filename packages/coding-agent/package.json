@@ -33,6 +33,7 @@
 		"!src/export/html/template.css",
 		"!src/export/html/template.js",
 		"!src/export/html/share-loader.js",
+		"export-assets/*.js",
 		"dist/cli.js",
 		"dist/docs-index.generated.txt",
 		"dist/CHANGELOG-*.md",

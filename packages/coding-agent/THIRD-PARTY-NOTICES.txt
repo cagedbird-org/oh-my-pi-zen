@@ -13,9 +13,14 @@ VENDORED SOURCE AND DATA
 ========================
 
 -------------------------------------------------------------------------------
-HTML export viewer dependencies hosted at stencil.so/assets/omp
+HTML export viewer dependencies vendored in zen/export-assets and embedded in exports
 
-marked 15.0.4 (https://github.com/markedjs/marked)
+The fixed stencil.so Markdown script is omp's MIT-licensed Marked-compatible
+implementation from packages/utils:
+Copyright (c) 2025-2026 Can Bölük
+Copyright (c) 2026 Stencil Labs, Inc.
+
+Retained upstream marked attribution (https://github.com/markedjs/marked)
 ---------------------------------------------------
 Copyright (c) 2011-2024, Christopher Jeffrey
 
@@ -143,7 +148,7 @@ Bundled into the stats dashboard (dist/client in @oh-my-pi/omp-stats, embedded i
 - react-dom 19.2.7 — MIT
 - scheduler 0.27.0 — MIT
 
-Bundled in the shared HTML export viewer (build.stencil.so/web/omp, generated from packages/collab-web):
+Bundled in the self-contained HTML export viewer (generated from packages/collab-web):
 
 - katex 0.18.7 — MIT
 - react 19.2.7 — MIT

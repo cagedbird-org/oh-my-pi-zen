@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createContext, runInContext, runInNewContext } from "node:vm";
 import { HTMLElement, parseHTML } from "@oh-my-pi/pi-utils/dom";
-import { Marked, type MarkedExtension } from "@oh-my-pi/pi-utils/marked";
+import type { Marked, MarkedExtension } from "@oh-my-pi/pi-utils/marked";
 import { TempDir } from "@oh-my-pi/pi-utils/temp";
 import { buildExportViewer, type ExportViewerMetadata } from "../scripts/build-export-viewer";
 
@@ -24,8 +24,8 @@ beforeAll(async () => {
 
 afterAll(() => temp[Symbol.dispose]());
 
-describe("hosted export viewer build", () => {
-	it("hashes the exact uploaded bytes and removes only obsolete viewer files", async () => {
+describe("self-contained export viewer build", () => {
+	it("hashes the exact self-contained bytes and removes only obsolete viewer files", async () => {
 		const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
 		expect(metadata).toEqual({
 			file: `export-viewer-${digest.toHex()}.js`,
@@ -36,6 +36,14 @@ describe("hosted export viewer build", () => {
 		expect(await Bun.file(path.join(outDir, staleName)).exists()).toBe(false);
 		expect(await Bun.file(path.join(outDir, unrelatedName)).text()).toBe("unrelated output");
 		expect((await fs.stat(path.join(outDir, `export-viewer-${"1".repeat(64)}.js`))).isDirectory()).toBe(true);
+		for (const [file, integrity] of [
+			["marked.333561b9.js", "MzVhuUicTTOmBQF03OgI9HBhlGcICMhDRSPIdD9aYmM="],
+			["highlight.837a6fa5.js", "g3pvpbDHNrUrveKythkPMF2j/J7UFoHbUyFQcFe1yEY="],
+		] as const) {
+			const dependency = await Bun.file(path.resolve(import.meta.dir, "../../../zen/export-assets", file)).text();
+			expect(Bun.SHA256.hash(dependency, "base64")).toBe(integrity);
+			expect(bytes.toString("utf8")).toContain(dependency);
+		}
 	});
 
 	it("reproduces the asset while checking, rather than rewriting, its manifest", async () => {
@@ -58,37 +66,9 @@ describe("hosted export viewer build", () => {
 		}, 30_000);
 	}
 
-	for (const dependency of ["Markdown", "Highlight"]) {
-		it(`reports a missing ${dependency} dependency before mutating the page`, () => {
-			const status = {
-				textContent: "Loading viewer…",
-				remove: () => {
-					throw new Error("Status removed");
-				},
-			};
-			let mutations = 0;
-			runInNewContext(bytes.toString("utf8"), {
-				ompMarkdown: dependency === "Markdown" ? undefined : { Marked },
-				document: {
-					createElement() {
-						mutations++;
-						throw new Error("Unexpected page mutation");
-					},
-					getElementById(id: string) {
-						return id === "viewer-status" ? status : null;
-					},
-				},
-			});
-			expect(status.textContent).toBe(`Failed to load viewer: ${dependency} dependency failed to load`);
-			expect(mutations).toBe(0);
-		});
-	}
-
 	it("catches synchronous initialization failures and renders them as status text", () => {
 		const status = { textContent: "Loading viewer…" };
 		runInNewContext(bytes.toString("utf8"), {
-			ompMarkdown: { Marked },
-			hljs: { getLanguage() {}, highlight() {}, highlightAuto() {} },
 			document: {
 				createElement() {
 					throw new Error("<img src=x onerror=alert(1)>");
@@ -102,9 +82,9 @@ describe("hosted export viewer build", () => {
 		expect(status.textContent).toContain("<img src=x onerror=alert(1)>");
 	});
 
-	it("shares dependencies with real tool cards without leaking their math configuration into the transcript", () => {
+	it("renders Markdown and highlighting with embedded dependencies without leaking tool math into the transcript", () => {
 		const { document, window } = parseHTML(
-			'<html><head><style id="custom-theme">:root { --accent: red; }</style></head><body><p id="viewer-status">Loading viewer…</p><script id="session-data"></script></body></html>',
+			'<!DOCTYPE html><html><head><style id="custom-theme">:root { --accent: red; }</style></head><body><p id="viewer-status">Loading viewer…</p><script id="session-data"></script></body></html>',
 		);
 		const sessionData = document.getElementById("session-data");
 		if (!sessionData) throw new Error("Missing test session data");
@@ -126,7 +106,12 @@ describe("hosted export viewer build", () => {
 						timestamp: "2026-01-01T00:00:01Z",
 						message: {
 							role: "assistant",
-							content: [{ type: "text", text: "$x^2$\n\n```js\nconst transcriptCode = 1;\n```" }],
+							content: [
+								{
+									type: "text",
+									text: "## Offline Markdown\n\n**Embedded dependencies**\n\n$x^2$\n\n```js\nconst transcriptCode = 1;\n```",
+								},
+							],
 							stopReason: "stop",
 							timestamp: 1,
 						},
@@ -139,23 +124,7 @@ describe("hosted export viewer build", () => {
 		Object.defineProperty(window, "matchMedia", { value: matchMedia });
 
 		const parsers: Marked[] = [];
-		class SharedMarked extends Marked {
-			constructor(...extensions: MarkedExtension[]) {
-				super(...extensions);
-				parsers.push(this);
-			}
-		}
-		const highlighted: string[] = [];
-		const hljs = {
-			getLanguage: () => true,
-			highlight(code: string) {
-				highlighted.push(code);
-				return { value: `<span class="shared-highlight">${code}</span>` };
-			},
-			highlightAuto(code: string) {
-				return this.highlight(code);
-			},
-		};
+		let markdown: { Marked: typeof Marked };
 		const elements = new Map<string, typeof HTMLElement>();
 		const scheduled: Array<() => void> = [];
 		const flushWork = () => {
@@ -173,8 +142,20 @@ describe("hosted export viewer build", () => {
 				get: (name: string) => elements.get(name),
 				define: (name: string, element: typeof HTMLElement) => elements.set(name, element),
 			},
-			ompMarkdown: { Marked: SharedMarked },
-			hljs,
+			get ompMarkdown() {
+				return markdown;
+			},
+			set ompMarkdown(value: { Marked: typeof Marked }) {
+				// Observe construction through the real embedded dependency, not a parser stub.
+				markdown = {
+					Marked: class extends value.Marked {
+						constructor(...extensions: MarkedExtension[]) {
+							super(...extensions);
+							parsers.push(this);
+						}
+					},
+				};
+			},
 			URL,
 			URLSearchParams,
 			TextDecoder,
@@ -204,7 +185,10 @@ describe("hosted export viewer build", () => {
 		const assistant = document.querySelector(".assistant-message");
 		expect(assistant?.textContent).toContain("$x^2$");
 		expect(assistant?.querySelector("math")).toBeNull();
-		expect(assistant?.querySelector(".shared-highlight")?.textContent).toContain("const transcriptCode = 1;");
+		expect(assistant?.querySelector("h2")?.textContent).toBe("Offline Markdown");
+		expect(assistant?.querySelector("strong")?.textContent).toBe("Embedded dependencies");
+		expect(assistant?.querySelector(".hljs-keyword")?.textContent).toBe("const");
+		expect(assistant?.querySelector("pre code")?.textContent).toContain("const transcriptCode = 1;");
 
 		const payload = {
 			name: "eval",
@@ -237,11 +221,12 @@ describe("hosted export viewer build", () => {
 		try {
 			flushWork();
 			expect(document.querySelector("omp-tool-view .tr-md math")).not.toBeNull();
-			expect(document.querySelector("omp-tool-view .shared-highlight")?.textContent).toBe("const toolCode = 2;");
-			expect(highlighted.some(code => code.includes("const transcriptCode = 1;"))).toBe(true);
-			expect(highlighted).toContain("const toolCode = 2;");
+			expect(document.querySelector("omp-tool-view .hljs-keyword")?.textContent).toBe("const");
+			expect(document.querySelector("omp-tool-view pre.tv-pre")?.textContent).toContain("const toolCode = 2;");
 			expect(parsers[1]?.parse("$x^2$", { async: false })).toBe("<p>$x^2$</p>\n");
-			expect(new SharedMarked().parse("$x^2$", { async: false })).toBe("<p>$x^2$</p>\n");
+			expect(runInContext('new ompMarkdown.Marked().parse("$x^2$", { async: false })', context)).toBe(
+				"<p>$x^2$</p>\n",
+			);
 		} finally {
 			runInContext("tool.remove(); tool.disconnectedCallback();", context);
 			flushWork();
