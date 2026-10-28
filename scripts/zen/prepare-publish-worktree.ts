@@ -8,6 +8,7 @@ import { buildExportViewer } from "../../packages/collab-web/scripts/build-expor
 import { packages, prepareNativeCorePackage, rewriteManifest, stageLegalPayloads } from "../ci-release-publish";
 import { fixEmitExtensions } from "../fix-emit-extensions";
 import { generateNpmPackages } from "../../packages/natives/scripts/gen-npm-packages";
+import { stageCollabWeb } from "./collab-web";
 import {
 	dependencyFields,
 	nativeTags,
@@ -77,6 +78,7 @@ async function buildStage(version: string): Promise<void> {
 	const leaves = await generateNpmPackages({ packageDir: nativeDir, version, tags: nativeTags });
 	// The upstream native helpers construct the original scope dynamically.
 	await transformTree(repoRoot, version);
+	const webDir = await stageCollabWeb(repoRoot, version);
 	const entries: ReleasePackage[] = [
 		...leaves.map(leaf => ({
 			name: rewriteZenText(leaf.manifest.name),
@@ -84,6 +86,7 @@ async function buildStage(version: string): Promise<void> {
 			dir: path.relative(repoRoot, leaf.dir),
 		})),
 		...packages.map(pkg => ({ name: "", version, dir: pkg.dir })),
+		{ name: "", version, dir: path.relative(repoRoot, webDir) },
 	];
 	const manifests = new Map<string, Manifest>();
 	for (const entry of entries) {

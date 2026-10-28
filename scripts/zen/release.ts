@@ -17,9 +17,11 @@ export const workspacePackages = [
 	"pi-coding-agent",
 ] as const;
 export const nativeTags = ["linux-x64", "darwin-arm64", "linux-arm64"] as const;
+export const collabWebName = "@oh-my-pi-zen/collab-web";
 export const releaseNames = new Set<string>([
 	...workspacePackages.map(name => `@oh-my-pi-zen/${name}`),
 	...nativeTags.map(tag => `@oh-my-pi-zen/pi-natives-${tag}`),
+	collabWebName,
 ]);
 export interface Manifest {
 	name: string;
@@ -143,4 +145,21 @@ export function packedFilename(json: string): string {
 	if (entries.length !== 1 || typeof entries[0]?.filename !== "string")
 		throw new Error("Expected one npm pack result");
 	return entries[0].filename;
+}
+
+/** Mirror sync is advisory: npm publication remains successful if it is unavailable. */
+export async function syncPublishedPackages(names: Iterable<string>): Promise<void> {
+	for (const name of names) {
+		try {
+			const response = await fetch(`https://registry.npmmirror.com/-/package/${name}/syncs`, {
+				method: "PUT",
+				signal: AbortSignal.timeout(10_000),
+			});
+			const result = response.ok ? ((await response.json()) as { ok?: boolean }) : null;
+			if (!result?.ok) throw new Error(`HTTP ${response.status}`);
+			console.log(`Requested npmmirror sync: ${name}`);
+		} catch (error) {
+			console.warn(`npmmirror sync skipped for ${name}: ${error}`);
+		}
+	}
 }
