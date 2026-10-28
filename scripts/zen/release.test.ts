@@ -1,5 +1,20 @@
-import { describe, expect, test } from "bun:test";
-import { packedFilename, publishOrder, rewriteZenText, transformManifest, zenVersion, type Manifest } from "./release";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { $ } from "bun";
+import { stageCollabWeb } from "./collab-web";
+import { npmPublishEnvironment } from "./publish-auth";
+import {
+	collabWebName,
+	packedFilename,
+	publishOrder,
+	rewriteZenText,
+	syncPublishedPackages,
+	transformManifest,
+	zenVersion,
+	type Manifest,
+} from "./release";
 
 describe("publish-time identity boundary", () => {
 	test("rewrites import subpaths and native template lookups without rewriting the zen scope twice", () => {
@@ -81,4 +96,126 @@ test("reads npm 11 and npm 12 pack output", () => {
 	expect(packedFilename('[{"filename":"zen.tgz"}]')).toBe("zen.tgz");
 	expect(packedFilename('{"@oh-my-pi-zen/pi-ai":{"filename":"zen.tgz"}}')).toBe("zen.tgz");
 	expect(() => packedFilename("{}")).toThrow("Expected one npm pack result");
+});
+
+test("stages a version-pinned static collab-web npm package without analytics or runtime dependencies", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "zen-web-stage-test-"));
+	try {
+		const source = path.join(root, "packages/collab-web");
+		const original =
+			'<html><head><!-- Analytics --><script src="https://um.can.ac/script.js"></script><script src="/umami.js"></script></head><body><script type="module" src="./main.ts"></script></body></html>';
+		await Bun.write(path.join(root, "LICENSE"), "MIT fixture license");
+		await Bun.write(
+			path.join(source, "package.json"),
+			JSON.stringify({
+				name: "@oh-my-pi/collab-web",
+				version: "16.3.6",
+				private: true,
+				dependencies: { "@oh-my-pi/pi-wire": "catalog:" },
+			}),
+		);
+		await Bun.write(path.join(source, "index.html"), original);
+		await Bun.write(path.join(source, "main.ts"), 'document.body.dataset.ready = "loaded";');
+		await Bun.write(path.join(source, "public/robots.txt"), "User-agent: *\nAllow: /\n");
+		const dir = await stageCollabWeb(root, "18.13.3-zen.2");
+		const manifest = (await Bun.file(path.join(dir, "package.json")).json()) as Manifest;
+		expect(manifest.name).toBe(collabWebName);
+		expect(manifest.version).toBe("18.13.3-zen.2");
+		expect(manifest.private).toBeUndefined();
+		expect(manifest.dependencies).toBeUndefined();
+		expect(manifest.scripts).toBeUndefined();
+		const html = await Bun.file(path.join(dir, "dist/index.html")).text();
+		expect(html).not.toMatch(/umami|um\.can\.ac|analytics/i);
+		expect(html).toContain('type="module"');
+		expect(await Bun.file(path.join(dir, "dist/robots.txt")).text()).toBe("User-agent: *\nAllow: /\n");
+		expect(await Bun.file(path.join(source, "index.html")).text()).toBe(original);
+		const packed = JSON.parse((await $`npm pack --ignore-scripts --dry-run --json`.cwd(dir).quiet()).text()) as
+			| { files: { path: string }[] }[]
+			| Record<string, { files: { path: string }[] }>;
+		const files = (Array.isArray(packed) ? packed[0]! : Object.values(packed)[0]!).files.map(file => file.path);
+		expect(files.filter(file => !/^dist\/[^/]+\.js$/.test(file)).sort()).toEqual([
+			"LICENSE",
+			"dist/index.html",
+			"dist/robots.txt",
+			"package.json",
+		]);
+		expect(files.filter(file => /^dist\/[^/]+\.js$/.test(file))).toHaveLength(1);
+		const transformed = transformManifest(
+			{
+				name: "@oh-my-pi/collab-web",
+				version: "16.3.6",
+				private: true,
+				dependencies: { "@oh-my-pi/pi-wire": "catalog:" },
+			},
+			"18.13.3-zen.2",
+			{},
+		);
+		expect(transformed.version).toBe("18.13.3-zen.2");
+		expect(transformed.dependencies).toEqual({ "@oh-my-pi-zen/pi-wire": "18.13.3-zen.2" });
+	} finally {
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
+
+test("every npm child strips ambient token auth and config overrides while retaining OIDC", async () => {
+	const source = {
+		PATH: process.env.PATH,
+		NODE_AUTH_TOKEN: "ambient",
+		NPM_TOKEN: "ambient",
+		OTHER_NPM_TOKEN: "ambient",
+		npm_config_token: "ambient",
+		npm_config__authToken: "ambient",
+		NPM_CONFIG_USERCONFIG: "/ambient/npmrc",
+		npm_config_userconfig: "/ambient/lowercase-npmrc",
+		NPM_CONFIG_GLOBALCONFIG: "/ambient/global-npmrc",
+		ACTIONS_ID_TOKEN_REQUEST_URL: "oidc-url",
+		ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+	};
+	const env = npmPublishEnvironment(source, "/isolated");
+	const script = "console.log(JSON.stringify(process.env))";
+	const child = await $`${process.execPath} -e ${script}`.env(env).quiet();
+	const actual = JSON.parse(child.text());
+	for (const key of [
+		"NODE_AUTH_TOKEN",
+		"NPM_TOKEN",
+		"OTHER_NPM_TOKEN",
+		"npm_config_token",
+		"npm_config__authToken",
+		"npm_config_userconfig",
+	]) {
+		expect(actual[key]).toBeUndefined();
+	}
+	expect(actual.ACTIONS_ID_TOKEN_REQUEST_URL).toBe("oidc-url");
+	expect(actual.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBe("oidc-request-token");
+	expect(actual.NPM_CONFIG_USERCONFIG).toBe("/isolated/oidc.npmrc");
+	expect(actual.NPM_CONFIG_GLOBALCONFIG).toBe("/isolated/global.npmrc");
+	expect(source.NODE_AUTH_TOKEN).toBe("ambient");
+});
+
+test("requests mirror sync with PUT for every published package and does not fail on mirror errors", async () => {
+	const requests: { url: string; method?: string }[] = [];
+	const warn = spyOn(console, "warn").mockImplementation(() => {});
+	const log = spyOn(console, "log").mockImplementation(() => {});
+	const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+		Object.assign(
+			async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+				requests.push({ url: String(input), method: init?.method });
+				if (requests.length === 1) throw new Error("mirror offline");
+				return requests.length === 2 ? new Response("unavailable", { status: 503 }) : Response.json({ ok: true });
+			},
+			{ preconnect: fetch.preconnect },
+		),
+	);
+	try {
+		const names = ["@oh-my-pi-zen/pi-utils", "@oh-my-pi-zen/pi-wire", collabWebName];
+		await syncPublishedPackages(names);
+		expect(requests).toEqual(
+			names.map(name => ({ url: `https://registry.npmmirror.com/-/package/${name}/syncs`, method: "PUT" })),
+		);
+		expect(warn).toHaveBeenCalledTimes(2);
+	} finally {
+		fetchSpy.mockRestore();
+		warn.mockRestore();
+		log.mockRestore();
+	}
 });
