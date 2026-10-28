@@ -325,6 +325,24 @@ export type CollabUiRequestDraft =
 
 export type CollabUiRequest = CollabUiRequestDraft & { reqId: number };
 
+/** Optional v3 extensions; absence preserves full, uncompressed snapshots. */
+export interface CollabCapabilities {
+	tail?: boolean;
+	compression?: "deflate"[];
+}
+
+export interface TranscriptHistoryRequest {
+	before: number;
+	/** Identity at the exclusive boundary, to detect a replaced transcript. */
+	beforeId: string;
+}
+
+export interface TranscriptHistoryPage {
+	start: number;
+	before: number;
+	entries: SessionEntry[];
+}
+
 export type GuestFrame =
 	| {
 			t: "hello";
@@ -336,12 +354,13 @@ export type GuestFrame =
 			 * read-only and rejects their mutating frames.
 			 */
 			writeToken?: string;
+			capabilities?: CollabCapabilities;
 	  }
 	| { t: "prompt"; text: string; images?: ImageContent[] }
 	| { t: "ui-response"; reqId: number; value?: CollabUiResponseValue }
 	| { t: "abort" }
 	| { t: "agent-cmd"; cmd: "chat" | "kill" | "revive"; agentId: string; text?: string }
-	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number };
+	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number; history?: TranscriptHistoryRequest };
 
 /** EventBus channels mirrored to guests (task subagent traffic only). */
 export type BusChannel = "task:subagent:progress" | "task:subagent:lifecycle";
@@ -360,6 +379,9 @@ export type HostFrame =
 			 * with `final: true`).
 			 */
 			entryCount: number;
+			/** Total entries and exclusive start of a negotiated tail snapshot. */
+			snapshotStart?: number;
+			compression?: "deflate";
 			/** True when this peer joined through a read-only (view) link. */
 			readOnly?: boolean;
 	  }
@@ -379,7 +401,7 @@ export type HostFrame =
 	| { t: "ui-request"; request: CollabUiRequest }
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `text` is decoded JSONL from `fromByte`, `newSize` the next offset base. */
-	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string; history?: TranscriptHistoryPage }
 	| { t: "bye"; reason: string }
 	| { t: "error"; message: string };
 
@@ -397,6 +419,9 @@ export type WireFrame = GuestFrame | HostFrame;
  *   answered by the `ui-response` guest frame. Guests that predate the
  *   grammar would silently drop `ui-request` (asks hang forever on the
  *   host), so they must be rejected at hello.
+ * Optional v3 capabilities negotiate tail snapshots/history on fetch-transcript
+ * and deflate payloads inside the seal. They do not raise the minimum version:
+ * peers omitting them retain the full JSON snapshot, including old v3 clients.
  */
 export const COLLAB_PROTO = 3;
 

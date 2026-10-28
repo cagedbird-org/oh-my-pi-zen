@@ -368,6 +368,7 @@ export class CollabGuestLink {
 				proto: COLLAB_PROTO,
 				name: collabDisplayName(this.#ctx),
 				writeToken: this.#writeToken,
+				capabilities: { compression: ["deflate"] },
 			});
 		};
 		socket.onFrame = frame => {

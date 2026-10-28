@@ -20,6 +20,8 @@ export interface TranscriptProps {
 	host?: ToolRenderHost;
 	/** Main connection phase; absent for the agent drawer's compact transcript. */
 	phase?: ConnectionPhase;
+	history?: { remaining: number; loading: boolean; error: string | null };
+	onLoadEarlier?: () => void;
 }
 
 interface ScrollGeometry {
@@ -271,7 +273,7 @@ const WINDOW = 100;
 const EARLIER_TRIGGER_PX = 200;
 
 export function Transcript(props: TranscriptProps): ReactNode {
-	const { entries, stream, streamDone, activeTools, working, compact, host, phase } = props;
+	const { entries, stream, streamDone, activeTools, working, compact, host, phase, history, onLoadEarlier } = props;
 
 	// null follows the tail. A number pins the first mounted entry while the
 	// reader is scrolled away from the bottom, so appended entries never
@@ -299,7 +301,7 @@ export function Transcript(props: TranscriptProps): ReactNode {
 	 * mounting earlier rows. Restoring against the row, not the total height
 	 * delta, stays exact when the same commit also appends live entries.
 	 */
-	const prependRef = useRef<{ anchor: Element; offset: number } | null>(null);
+	const prependRef = useRef<{ anchor: Element; offset: number; firstId?: string } | null>(null);
 
 	// Follow the tail while bottom-locked; releasing/re-arming happens in onScroll.
 	useEffect(() => {
@@ -312,6 +314,7 @@ export function Transcript(props: TranscriptProps): ReactNode {
 	useEffect(() => {
 		const el = rootRef.current;
 		if (phase !== "live" || el === null) return;
+		prependRef.current = null;
 		setPinnedStart(null);
 		followTranscriptTail(el, lockRef, true);
 	}, [phase]);
@@ -321,23 +324,34 @@ export function Transcript(props: TranscriptProps): ReactNode {
 		const el = rootRef.current;
 		const before = prependRef.current;
 		if (el === null || before === null) return;
+		// Live entries may append while a remote page is still in flight.
+		if (before.firstId !== undefined && entries[0]?.id === before.firstId) return;
 		prependRef.current = null;
 		if (!before.anchor.isConnected) return;
 		el.scrollTop += before.anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - before.offset;
-	}, [start]);
+	}, [start, entries]);
+
+	const captureAnchor = (remote: boolean): void => {
+		const el = rootRef.current;
+		if (el === null) return;
+		const top = el.getBoundingClientRect().top;
+		for (const row of el.children) {
+			if (!row.classList.contains("tr-row")) continue;
+			const rect = row.getBoundingClientRect();
+			if (rect.bottom <= top) continue;
+			prependRef.current = { anchor: row, offset: rect.top - top, firstId: remote ? entries[0]?.id : undefined };
+			break;
+		}
+	};
 
 	const showEarlier = (): void => {
 		const el = rootRef.current;
-		if (el === null || start === 0 || prependRef.current !== null) return;
-		const top = el.getBoundingClientRect().top;
-		for (const row of el.children) {
-			if (row.classList.contains("tr-earlier")) continue;
-			const rect = row.getBoundingClientRect();
-			if (rect.bottom <= top) continue;
-			prependRef.current = { anchor: row, offset: rect.top - top };
-			break;
-		}
+		if (el === null || (start === 0 && !history?.remaining) || history?.loading) return;
+		// Loading a remote page must not re-arm tail-following, even for a short tail.
+		lockRef.current = false;
+		captureAnchor(start === 0);
 		setPinnedStart(Math.max(0, start - WINDOW));
+		if (start === 0) onLoadEarlier?.();
 	};
 
 	// Tool calls committed anywhere in the session: rescanned when entries change,
@@ -377,21 +391,26 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				updateTranscriptTailLock(el, lockRef);
 				// Back at the bottom: drop the pin so the window trims to the tail again.
 				if (lockRef.current) {
+					prependRef.current = null;
 					if (pinnedStart !== null) setPinnedStart(null);
 				} else if (pinnedStart === null) {
 					setPinnedStart(start);
 				}
+				if (history?.loading && !lockRef.current) captureAnchor(true);
 				if (el.scrollTop <= EARLIER_TRIGGER_PX) showEarlier();
 			}}
 		>
 			{settled && entries.length === 0 && stream === null && !working && (
 				<div className="tr-empty">no activity yet</div>
 			)}
-			{start > 0 && (
-				<button type="button" className="tr-earlier" onClick={showEarlier}>
-					show {start.toLocaleString("en-US")} earlier
+			{(start > 0 || (history?.remaining ?? 0) > 0) && (
+				<button type="button" className="tr-earlier" onClick={showEarlier} disabled={history?.loading}>
+					{history?.loading
+						? "loading earlier history…"
+						: `show ${(start + (history?.remaining ?? 0)).toLocaleString("en-US")} earlier`}
 				</button>
 			)}
+			{history?.error && <div role="alert">{history.error}</div>}
 			{visible.map(entry => (
 				<EntryRow key={entry.id} entry={entry} results={results} active={activeTools} host={host} />
 			))}
