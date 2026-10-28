@@ -14,6 +14,7 @@ import type {
 	GuestFrame,
 	ParsedCollabLink,
 	Participant,
+	TranscriptHistoryPage,
 	AgentSnapshot as WireAgentSnapshot,
 } from "@oh-my-pi/pi-wire";
 import {
@@ -69,6 +70,8 @@ export type CollabFrame =
 			 * (or a chunk arrives with `final: true`).
 			 */
 			entryCount: number;
+			snapshotStart?: number;
+			compression?: "deflate";
 			/** True when this peer joined through a read-only (view) link. */
 			readOnly?: boolean;
 	  }
@@ -91,7 +94,7 @@ export type CollabFrame =
 	| { t: "ui-request"; request: CollabUiRequest }
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `error` marks a terminal read failure that guests must surface without hot retrying. */
-	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string; history?: TranscriptHistoryPage }
 	| { t: "bye"; reason: string }
 	| { t: "error"; message: string };
 

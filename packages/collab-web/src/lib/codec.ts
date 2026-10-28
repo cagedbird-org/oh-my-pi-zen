@@ -6,12 +6,12 @@
  * Sealed layout: `[12B IV][ciphertext+tag]`.
  */
 import type { WireFrame } from "@oh-my-pi/pi-wire";
+import { decodeCollabPayload } from "@oh-my-pi/pi-wire/collab-compression";
 
 const AES_ALGORITHM = "AES-GCM";
 const IV_LENGTH = 12;
 const KEY_LENGTH = 32;
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
 
 export function generateRoomKey(): Uint8Array {
 	const key = new Uint8Array(KEY_LENGTH);
@@ -45,7 +45,7 @@ export async function open(key: CryptoKey, data: Uint8Array): Promise<WireFrame>
 	const iv = asStrict(data.subarray(0, IV_LENGTH));
 	const ciphertext = asStrict(data.subarray(IV_LENGTH));
 	const plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: AES_ALGORITHM, iv }, key, ciphertext));
-	return JSON.parse(TEXT_DECODER.decode(plaintext)) as WireFrame;
+	return JSON.parse(await decodeCollabPayload(plaintext)) as WireFrame;
 }
 
 function asStrict(bytes: Uint8Array): Uint8Array<ArrayBuffer> {

@@ -136,6 +136,7 @@ export class CollabSocket {
 	/** Serializes open() so frames are delivered in arrival order. */
 	#recvChain: Promise<void> = Promise.resolve();
 	#pendingSends: PendingSend[] = [];
+	readonly #compressedPeers = new Set<number>();
 	#pendingSendBytes = 0;
 	/**
 	 * Peers the relay has retired. Sole authority for the queue invariant: **every
@@ -201,6 +202,12 @@ export class CollabSocket {
 		this.#sendOne(frame, targetPeer);
 	}
 
+	/** Only targeted replies to an advertising peer may use the deflate extension. */
+	setPeerCompression(peer: number, enabled: boolean): void {
+		if (enabled) this.#compressedPeers.add(peer);
+		else this.#compressedPeers.delete(peer);
+	}
+
 	/**
 	 * Queue a broadcast frame that supersedes every frame still waiting under the
 	 * same `key`, for cumulative snapshots where only the newest matters — the
@@ -258,6 +265,7 @@ export class CollabSocket {
 	 */
 	dropPeer(peerId: number): number {
 		if (peerId === 0) return 0;
+		this.#compressedPeers.delete(peerId);
 		return this.#discardWhere(pending => pending.targetPeer === peerId);
 	}
 
@@ -300,6 +308,7 @@ export class CollabSocket {
 	#resetForRecreatedRoom(): void {
 		this.#roomGeneration++;
 		this.#retiredPeers.clear();
+		this.#compressedPeers.clear();
 		const discarded = this.#discardWhere(pending => pending.targetPeer !== 0);
 		if (discarded > 0) logger.debug("collab: discarded targeted sends across a reconnect", { discarded });
 	}
@@ -389,7 +398,11 @@ export class CollabSocket {
 			}
 			this.#pendingSendBytes += bytes;
 			try {
-				const sealed = await sealSerialized(this.#opts.key, serialized);
+				const sealed = await sealSerialized(
+					this.#opts.key,
+					serialized,
+					this.#compressedPeers.has(pending.targetPeer),
+				);
 				if (this.#closed || generation !== this.#sendGeneration) return;
 				if (pending.cancelled) continue;
 				const envelope = packEnvelope(pending.targetPeer, sealed);
@@ -494,6 +507,7 @@ export class CollabSocket {
 		// synchronous trigger instead of a timer.
 		this.#roomGeneration++;
 		this.#retiredPeers.clear();
+		this.#compressedPeers.clear();
 	}
 
 	#clearBackpressureDrain(): void {

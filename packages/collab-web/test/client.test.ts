@@ -500,4 +500,81 @@ describe("GuestClient frame apply", () => {
 		expect(after.entries).not.toBe(before.entries);
 		expect(after.entries).toHaveLength(before.entries.length + 1);
 	});
+
+	it("publishes a tail once, prepends one history page and preserves concurrent live entries", () => {
+		const client = new GuestClient(LINK, "tester");
+		const tail = messageEntry("e2", { role: "user", content: "tail", timestamp: 2 });
+		const earlier = messageEntry("e1", { role: "user", content: "earlier", timestamp: 1 });
+		const live = messageEntry("e3", { role: "user", content: "live", timestamp: 3 });
+		client.applyFrameForTest({ ...welcomeFrame(3), snapshotStart: 1 } as HostFrame);
+		client.applyFrameForTest(snapshotChunk([tail], false));
+		expect(client.getSnapshot().entries).toEqual([]);
+		client.applyFrameForTest(snapshotChunk([live], true));
+		expect(client.getSnapshot().phase).toBe("live");
+		const send = vi.spyOn(CollabSocket.prototype, "send").mockImplementation(() => {});
+		try {
+			client.loadEarlier();
+			client.loadEarlier();
+			expect(send).toHaveBeenCalledTimes(1);
+			expect(send.mock.calls[0]?.[0]).toEqual({
+				t: "fetch-transcript",
+				reqId: 1,
+				agentId: "",
+				fromByte: 0,
+				history: { before: 1, beforeId: "e2" },
+			});
+			client.applyFrameForTest({
+				t: "entry",
+				entry: messageEntry("e4", { role: "user", content: "new", timestamp: 4 }),
+			});
+			client.applyFrameForTest({
+				t: "transcript",
+				reqId: 1,
+				text: "",
+				newSize: 0,
+				history: { start: 0, before: 1, entries: [earlier] },
+			});
+			expect(client.getSnapshot().entries.map(entry => entry.id)).toEqual(["e1", "e2", "e3", "e4"]);
+			expect(client.getSnapshot().history).toEqual({ remaining: 0, loading: false, error: null });
+			client.loadEarlier();
+			expect(send).toHaveBeenCalledTimes(1);
+		} finally {
+			send.mockRestore();
+			client.close();
+		}
+	});
+
+	it("times out a history request without losing the visible tail, and ignores a stale reply after re-welcome", () => {
+		vi.useFakeTimers();
+		const client = new GuestClient(LINK, "tester");
+		const tail = messageEntry("e2", { role: "user", content: "tail", timestamp: 2 });
+		const welcome = { ...welcomeFrame(2), snapshotStart: 1 } as HostFrame;
+		client.applyFrameForTest(welcome);
+		client.applyFrameForTest(snapshotChunk([tail]));
+		const send = vi.spyOn(CollabSocket.prototype, "send").mockImplementation(() => {});
+		try {
+			client.loadEarlier();
+			vi.advanceTimersByTime(30_001);
+			expect(client.getSnapshot().history.loading).toBe(false);
+			expect(client.getSnapshot().history.error).toContain("timed out");
+			expect(client.getSnapshot().entries.map(entry => entry.id)).toEqual(["e2"]);
+			client.loadEarlier();
+			client.applyFrameForTest(welcome);
+			client.applyFrameForTest(snapshotChunk([tail]));
+			client.applyFrameForTest({
+				t: "transcript",
+				reqId: 2,
+				text: "",
+				newSize: 0,
+				history: { start: 0, before: 1, entries: [tail] },
+			});
+			vi.advanceTimersByTime(30_001);
+			expect(client.getSnapshot().history).toEqual({ remaining: 1, loading: false, error: null });
+			expect(client.getSnapshot().entries.map(entry => entry.id)).toEqual(["e2"]);
+		} finally {
+			send.mockRestore();
+			client.close();
+			vi.useRealTimers();
+		}
+	});
 });

@@ -72,6 +72,7 @@ export interface GuestSnapshot {
 	notices: readonly Notice[];
 	/** Snapshot download progress between `welcome` and its final chunk, else null. */
 	loading: { received: number; total: number } | null;
+	history: { remaining: number; loading: boolean; error: string | null };
 }
 
 const MAX_NOTICES = 50;
@@ -127,6 +128,9 @@ export class GuestClient {
 	#welcomed = false;
 	#welcomeTimer: Timer | null = null;
 	#snapshotProgressTimer: Timer | null = null;
+	#historyStart = 0;
+	#historyError: string | null = null;
+	#pendingHistory: { reqId: number; before: number; beforeId: string; timer: Timer } | null = null;
 
 	#phase: ConnectionPhase = "connecting";
 	#endedReason: string | null = null;
@@ -198,6 +202,7 @@ export class GuestClient {
 	close(): void {
 		this.#clearWelcomeTimer();
 		this.#clearSnapshotProgressTimer();
+		this.#clearHistory();
 		this.#socket.close();
 	}
 
@@ -250,6 +255,30 @@ export class GuestClient {
 		return promise;
 	}
 
+	/** Fetch exactly the preceding bounded page using the transcript request path. */
+	loadEarlier = (): void => {
+		if (this.#phase !== "live" || this.#historyStart === 0 || this.#pendingHistory) return;
+		const beforeId = this.#entries[0]?.id;
+		if (!beforeId) return;
+		const reqId = ++this.#reqSeq;
+		const before = this.#historyStart;
+		const timer = setTimeout(() => {
+			this.#pendingHistory = null;
+			this.#historyError = "timed out loading earlier history; try again";
+			this.#commit();
+		}, SNAPSHOT_PROGRESS_TIMEOUT_MS);
+		this.#pendingHistory = { reqId, before, beforeId, timer };
+		this.#historyError = null;
+		this.#socket.send({ t: "fetch-transcript", reqId, agentId: "", fromByte: 0, history: { before, beforeId } });
+		this.#commit();
+	};
+
+	#clearHistory(): void {
+		if (this.#pendingHistory) clearTimeout(this.#pendingHistory.timer);
+		this.#pendingHistory = null;
+		this.#historyError = null;
+	}
+
 	/**
 	 * Test seam: apply a synthetic host frame through the real apply path. With
 	 * `flush` (default), a commit deferred to the next animation frame is
@@ -261,7 +290,13 @@ export class GuestClient {
 	}
 
 	#handleOpen(): void {
-		this.#socket.send({ t: "hello", proto: COLLAB_PROTO, name: this.#name, writeToken: this.#writeToken });
+		this.#socket.send({
+			t: "hello",
+			proto: COLLAB_PROTO,
+			name: this.#name,
+			writeToken: this.#writeToken,
+			capabilities: { tail: true, compression: typeof DecompressionStream === "function" ? ["deflate"] : undefined },
+		});
 		this.#phase = this.#everConnected ? "reconnecting" : "waiting";
 		this.#everConnected = true;
 		this.#commit();
@@ -269,6 +304,7 @@ export class GuestClient {
 
 	#handleClose(reason: string, willReconnect: boolean): void {
 		this.#clearSnapshotProgressTimer();
+		this.#clearHistory();
 		if (this.#phase === "ended") return;
 		if (willReconnect) {
 			this.#phase = "reconnecting";
@@ -284,6 +320,7 @@ export class GuestClient {
 		if (this.#phase === "ended") return;
 		this.#clearWelcomeTimer();
 		this.#clearSnapshotProgressTimer();
+		this.#clearHistory();
 		this.#phase = "ended";
 		this.#endedReason = reason;
 		this.#pendingSnapshot = null;
@@ -341,12 +378,14 @@ export class GuestClient {
 				// Entries already on screen stay until the new snapshot replaces
 				// them once complete, so a resync never blanks the transcript.
 				this.#header = frame.header;
+				this.#clearHistory();
+				this.#historyStart = frame.snapshotStart ?? 0;
 				if (frame.entryCount === 0) {
 					this.#entries = [];
 					this.#publishedEntries = [];
 					this.#pendingSnapshot = null;
 				} else {
-					this.#pendingSnapshot = { entries: [], live: [], total: frame.entryCount };
+					this.#pendingSnapshot = { entries: [], live: [], total: frame.entryCount - this.#historyStart };
 				}
 				this.#state = frame.state;
 				this.#agents = [...frame.agents];
@@ -447,6 +486,27 @@ export class GuestClient {
 				else this.#uiRequestQueue = this.#uiRequestQueue.filter(request => request.reqId !== frame.reqId);
 				break;
 			case "transcript": {
+				const history = this.#pendingHistory;
+				if (history?.reqId === frame.reqId) {
+					this.#clearHistory();
+					const page = frame.history;
+					if (frame.error) this.#historyError = frame.error;
+					else if (
+						!page ||
+						page.before !== this.#historyStart ||
+						page.start < 0 ||
+						page.start >= page.before ||
+						page.entries.length !== page.before - page.start ||
+						this.#entries[0]?.id !== history.beforeId
+					) {
+						this.#historyError = "history boundary changed; rejoin to load history";
+					} else {
+						this.#historyStart = page.start;
+						this.#entries = [...page.entries, ...this.#entries];
+						this.#publishedEntries = [...this.#entries];
+					}
+					break;
+				}
 				const pending = this.#pendingTranscripts.get(frame.reqId);
 				if (pending) {
 					this.#pendingTranscripts.delete(frame.reqId);
@@ -639,6 +699,7 @@ export class GuestClient {
 			readOnly: this.#readOnly,
 			uiRequest: this.#uiRequest,
 			notices: this.#notices,
+			history: { remaining: this.#historyStart, loading: this.#pendingHistory !== null, error: this.#historyError },
 			loading: this.#pendingSnapshot && {
 				received: this.#pendingSnapshot.entries.length,
 				total: this.#pendingSnapshot.total,
