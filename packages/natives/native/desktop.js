@@ -30,3 +30,9 @@ export function forgetDesktopEscapeStops(key) {
 export function closeDesktopEventTaps() {
 	loadNative().closeDesktopEventTaps?.();
 }
+
+/** Start the nested session bridge when the installed addon supports it. */
+export function startSessionBusBridge(privateAddress, names) {
+	const start = loadNative().startSessionBusBridge;
+	return typeof start === "function" ? start(privateAddress, names) : undefined;
+}

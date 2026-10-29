@@ -54,9 +54,10 @@ pub struct ApplicationOpenOptions {
 	pub app:      Option<String>,
 }
 
-/// An opened application: its [`Application`] fields and the window it
-/// shows. On macOS `window` is its frontmost window once one is on screen;
-/// other platforms report none.
+/// An opened application and the window it shows.
+///
+/// macOS returns its frontmost window; `KWin` returns an existing or newly
+/// launched matching window once it appears (within three seconds).
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct OpenedApplication {
@@ -72,6 +73,84 @@ impl OpenedApplication {
 	pub(crate) fn new(application: Application, window: Option<DesktopWindow>) -> Self {
 		let Application { id, name, path, running, pid } = application;
 		Self { id, name, path, running, pid, window }
+	}
+}
+
+pub(crate) struct WindowIdentity {
+	id:         String,
+	pid:        Option<u32>,
+	#[cfg(target_os = "linux")]
+	wm_class:   Option<String>,
+	#[cfg(target_os = "linux")]
+	executable: Option<std::path::PathBuf>,
+}
+
+impl WindowIdentity {
+	pub(crate) fn new(application: &OpenedApplication) -> Self {
+		#[cfg(target_os = "linux")]
+		let (wm_class, executable) = platform::window_identity(Path::new(&application.path));
+		Self {
+			id: application
+				.id
+				.strip_suffix(".desktop")
+				.unwrap_or(&application.id)
+				.to_owned(),
+			pid: application.pid,
+			#[cfg(target_os = "linux")]
+			wm_class,
+			#[cfg(target_os = "linux")]
+			executable,
+		}
+	}
+
+	fn matches(&self, window: &DesktopWindow) -> bool {
+		let identity = window.app.eq_ignore_ascii_case(&self.id);
+		#[cfg(target_os = "linux")]
+		let identity = identity
+			|| self
+				.wm_class
+				.as_ref()
+				.is_some_and(|class| !class.is_empty() && window.app.eq_ignore_ascii_case(class));
+		if !identity {
+			return false;
+		}
+		let Some(pid) = window.pid else {
+			return false;
+		};
+		#[cfg(target_os = "linux")]
+		return platform::window_process_matches(pid, self.pid, self.executable.as_deref());
+		#[cfg(not(target_os = "linux"))]
+		{
+			self.pid == Some(pid)
+		}
+	}
+
+	pub(crate) fn unique<'a>(
+		&self,
+		windows: impl Iterator<Item = &'a DesktopWindow>,
+	) -> Option<&'a DesktopWindow> {
+		let mut matches = windows.filter(|window| self.matches(window));
+		let first = matches.next()?;
+		matches.next().is_none().then_some(first)
+	}
+
+	pub(crate) fn launched<'a>(
+		&self,
+		windows: impl Iterator<Item = &'a DesktopWindow>,
+		previous_pids: &std::collections::HashSet<u32>,
+	) -> Option<&'a DesktopWindow> {
+		let mut matches = windows.filter(|window| self.matches(window));
+		let first = matches.next()?;
+		let mut selected = first;
+		for window in matches {
+			if window.pid != first.pid || first.pid.is_none_or(|pid| previous_pids.contains(&pid)) {
+				return None;
+			}
+			if window.focused {
+				selected = window;
+			}
+		}
+		Some(selected)
 	}
 }
 
@@ -240,7 +319,13 @@ fn route(apps: &[Application], input: &str, options: &ApplicationOpenOptions) ->
 	}
 }
 
-pub(crate) fn open(input: &str, options: ApplicationOpenOptions) -> CoreResult<OpenedApplication> {
+pub(crate) fn open(
+	input: &str,
+	options: ApplicationOpenOptions,
+	windows: Option<&[DesktopWindow]>,
+) -> CoreResult<OpenedApplication> {
+	#[cfg(not(target_os = "linux"))]
+	let _ = windows;
 	if input.is_empty() || input.contains('\0') {
 		return Err(DesktopError::invalid_target(
 			"application identity must be nonempty and contain no NUL",
@@ -267,7 +352,10 @@ pub(crate) fn open(input: &str, options: ApplicationOpenOptions) -> CoreResult<O
 		let activate = options.activate.unwrap_or(false);
 		#[cfg(target_os = "macos")]
 		return platform::open(app, activate);
-		#[cfg(not(target_os = "macos"))]
+		#[cfg(target_os = "linux")]
+		return platform::open(app, activate, windows)
+			.map(|application| OpenedApplication::new(application, None));
+		#[cfg(target_os = "windows")]
 		return platform::open(app, activate)
 			.map(|application| OpenedApplication::new(application, None));
 	}
@@ -350,6 +438,88 @@ mod tests {
 			running: false,
 			pid:     None,
 		}
+	}
+
+	#[test]
+	fn window_identity_rejects_display_name_suffix_and_ambiguous_windows() {
+		let mut application = OpenedApplication::new(
+			app("org.example.Editor.desktop", "Editor", "/missing.desktop"),
+			None,
+		);
+		application.pid = Some(std::process::id());
+		let identity = WindowIdentity::new(&application);
+		let unrelated = DesktopWindow {
+			id:        "other".into(),
+			app:       "org.other.Editor".into(),
+			pid:       application.pid,
+			title:     "Editor".into(),
+			x:         0,
+			y:         0,
+			width:     100,
+			height:    100,
+			focused:   true,
+			minimized: None,
+		};
+		let correct = DesktopWindow {
+			id: "correct".into(),
+			app: "org.example.Editor".into(),
+			..unrelated.clone()
+		};
+		assert_eq!(
+			identity
+				.unique([&unrelated, &correct].into_iter())
+				.unwrap()
+				.id,
+			"correct"
+		);
+		assert!(identity.unique([&unrelated].into_iter()).is_none());
+		let duplicate = DesktopWindow { id: "duplicate".into(), ..correct.clone() };
+		assert!(
+			identity
+				.unique([&correct, &duplicate].into_iter())
+				.is_none()
+		);
+		let fresh = std::collections::HashSet::new();
+		assert_eq!(
+			identity
+				.launched([&correct, &duplicate].into_iter(), &fresh)
+				.unwrap()
+				.id,
+			"duplicate"
+		);
+		let background = DesktopWindow { focused: false, ..duplicate.clone() };
+		let first = DesktopWindow { focused: false, ..correct.clone() };
+		assert_eq!(
+			identity
+				.launched([&first, &background].into_iter(), &fresh)
+				.unwrap()
+				.id,
+			first.id
+		);
+		// The original first choice closes during the settling interval.
+		assert_eq!(
+			identity
+				.launched(std::iter::once(&background), &fresh)
+				.unwrap()
+				.id,
+			background.id
+		);
+		let activated = DesktopWindow { focused: true, ..background.clone() };
+		assert_eq!(
+			identity
+				.launched([&first, &activated].into_iter(), &fresh)
+				.unwrap()
+				.id,
+			activated.id
+		);
+		let existing = [std::process::id()].into_iter().collect();
+		assert!(
+			identity
+				.launched([&correct, &duplicate].into_iter(), &existing)
+				.is_none()
+		);
+		let wrong_pid = DesktopWindow { pid: Some(u32::MAX), ..correct };
+		assert!(identity.unique([&wrong_pid].into_iter()).is_none());
 	}
 
 	#[test]
@@ -510,7 +680,7 @@ mod tests {
 			app: Some("TextEdit".into()),
 			..Default::default()
 		};
-		let error = open("/tmp", options).unwrap_err();
+		let error = open("/tmp", options, None).unwrap_err();
 		assert!(error.message.contains("reveal or app, not both"), "{}", error.message);
 	}
 
@@ -522,7 +692,7 @@ mod tests {
 			ApplicationOpenOptions { reveal: Some(true), ..Default::default() },
 			ApplicationOpenOptions { app: Some("Editor".into()), ..Default::default() },
 		] {
-			let error = open(".", options).unwrap_err();
+			let error = open(".", options, None).unwrap_err();
 			assert_eq!(error.code, super::super::error::ErrorCode::Unsupported);
 			assert!(error.message.contains("on macOS only"), "{}", error.message);
 		}
@@ -533,7 +703,7 @@ mod tests {
 		let error = open_document(&[], "https://example.com", &url).unwrap_err();
 		assert_eq!(error.code, super::super::error::ErrorCode::Unsupported);
 		// A file or folder path alone is still read as an application, as before.
-		let error = open(".", ApplicationOpenOptions::default()).unwrap_err();
+		let error = open(".", ApplicationOpenOptions::default(), None).unwrap_err();
 		assert_ne!(error.code, super::super::error::ErrorCode::Unsupported);
 	}
 }

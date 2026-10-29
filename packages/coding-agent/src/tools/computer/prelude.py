@@ -1,4 +1,5 @@
-def _make_computer():
+def _make_computer(agent=False, _factory=None, _generation=None):
+    _factory = _factory or _make_computer
     import collections.abc
     import re
 
@@ -40,6 +41,7 @@ def _make_computer():
                     if value is not None
                 },
                 "action": action,
+                **({"agentDesktop": True, "agentDesktopGeneration": _generation} if agent else {}),
             },
         )
         if isinstance(response, str):
@@ -327,13 +329,30 @@ def _make_computer():
         async def write(self, text):
             return await _call([_step("clipboard.write", (text,), {})])
 
+    class _AgentDesktop:
+        __slots__ = ("_current", "_generation")
+
+        def __init__(self, current, generation):
+            self._current = current
+            self._generation = generation
+
+        def __getattr__(self, name):
+            return getattr(self._current, name)
+
+        def __repr__(self):
+            return "<computer.AgentDesktop>"
+
+        async def agentDesktop(self):
+            return self
+
     class _Computer(_InputTarget):
-        __slots__ = ("clipboard", "apps", "control")
+        __slots__ = ("clipboard", "apps", "control", "_agent_computer")
 
         def __init__(self):
             self.clipboard = _Clipboard()
             self.apps = _Apps(self, "apps")
             self.control = _Control(self, "control")
+            self._agent_computer = None
 
         async def display(self, selector):
             return _Display(await self._method("display", (selector,), {}))
@@ -385,6 +404,21 @@ def _make_computer():
             """Return native backend capabilities and permission state, or None when unavailable."""
             details = await _invoke("capabilities", {})
             return details if "backend" in details else None
+
+        async def agentDesktop(self):
+            """Start or reconnect the isolated KDE desktop; repeated calls return the same facade."""
+            if agent:
+                return self
+            details = await _invoke("agent-desktop", {})
+            generation = details.get("generation")
+            if not isinstance(generation, str):
+                raise RuntimeError("Agent desktop did not publish its generation")
+            if self._agent_computer is None:
+                self._agent_computer = _AgentDesktop(_factory(True, _factory, generation), generation)
+            elif self._agent_computer._generation != generation:
+                self._agent_computer._current = _factory(True, _factory, generation)
+                self._agent_computer._generation = generation
+            return self._agent_computer
 
         async def close(self):
             """End the persistent desktop session; later calls fail."""

@@ -6,6 +6,7 @@ import { clearSubmittedText } from "./helpers/draft";
 import { shutdownHandlerTui } from "./builtin-lifecycle";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
+import { agentDesktopStateForOwner, controlAgentDesktopForOwner } from "../tools/computer/supervisor";
 
 /** Advisors with review work they can still run (not parked, yielded, or quota-paused). */
 function advisorUnsettledCount(session: AgentSession): number {
@@ -39,6 +40,38 @@ function pauseWorkStatus(root: AgentSession): PauseWorkStatus {
 }
 
 export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
+	{
+		name: "desk",
+		icon: "computer",
+		description: "Show or hide the agent desktop",
+		inlineHint: "[start|stop]",
+		allowArgs: true,
+		subcommands: [
+			{ name: "start", description: "Prestart the agent desktop hidden" },
+			{ name: "stop", description: "Close the agent desktop and all its windows" },
+		],
+		getTuiAutocompleteDescription: runtime => {
+			const state = agentDesktopStateForOwner(runtime.ctx.session.getEvalKernelOwnerId());
+			return `Agent desktop: ${state === "stopped" ? "not started" : state}`;
+		},
+		handleTui: async (command, runtime) => {
+			clearSubmittedText(runtime);
+			const arg = command.args.trim();
+			let action: "start" | "stop" | "toggle";
+			if (arg === "") action = "toggle";
+			else if (arg === "start" || arg === "stop") action = arg;
+			else {
+				runtime.ctx.showError("Usage: /desk [start|stop]");
+				return;
+			}
+			try {
+				const state = await controlAgentDesktopForOwner(runtime.ctx.session.getEvalKernelOwnerId(), action);
+				runtime.ctx.showStatus(`Agent desktop: ${state}`);
+			} catch (error) {
+				runtime.ctx.showError(errorMessage(error));
+			}
+		},
+	},
 	{
 		name: "force",
 		icon: "hammer",

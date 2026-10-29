@@ -257,6 +257,7 @@ impl X11Capture {
 				.property(id, pid_atom, AtomEnum::CARDINAL, 1)
 				.and_then(|reply| reply.value32()?.next());
 			windows.push(DesktopWindow {
+				minimized: None,
 				id: id.to_string(),
 				title,
 				app,

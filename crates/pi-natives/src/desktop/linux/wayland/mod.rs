@@ -1,6 +1,6 @@
 #[cfg(feature = "wayland-pipewire")]
 mod capture;
-mod libei;
+pub(in crate::desktop::linux) mod libei;
 mod portal;
 mod xkb;
 
@@ -613,6 +613,7 @@ mod tests {
 	fn portal_window(x: i32, y: i32, width: u32, height: u32, position_known: bool) -> AtSpiWindow {
 		AtSpiWindow {
 			window: DesktopWindow {
+				minimized: None,
 				id: "w".into(),
 				title: "T".into(),
 				app: "A".into(),
