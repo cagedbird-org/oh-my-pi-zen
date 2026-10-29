@@ -2343,13 +2343,12 @@ describe("Module-level LRU render cache", () => {
 		const markdown = new Markdown("```sql\nSELECT 1;\nSELECT 2;\nSELECT 3;", 0, 0, defaultMarkdownTheme);
 		markdown.transientRenderCache = true;
 		markdown.render(80);
-		// The last two lines stay live: the newest is still being written, and the
-		// cut keeps one more so the publisher always has a tail to extend.
-		expect(markdown.getLastRenderStableText()).toBe("```sql\nSELECT 1;\n");
+		// Every ended line is final; only the line still being written stays live.
+		expect(markdown.getLastRenderStableText()).toBe("```sql\nSELECT 1;\nSELECT 2;\n");
 
 		markdown.setText("```sql\nSELECT 1;\nSELECT 2;\nSELECT 3;\nSELECT 4;");
 		markdown.render(80);
-		expect(markdown.getLastRenderStableText()).toBe("```sql\nSELECT 1;\nSELECT 2;\n");
+		expect(markdown.getLastRenderStableText()).toBe("```sql\nSELECT 1;\nSELECT 2;\nSELECT 3;\n");
 	});
 
 	it("clears the settled fence text when a non-append edit rewinds it", () => {
@@ -2360,13 +2359,13 @@ describe("Module-level LRU render cache", () => {
 		const markdown = new Markdown("```sql\nold\nrow\n", 0, 0, defaultMarkdownTheme);
 		markdown.transientRenderCache = true;
 		markdown.render(80);
-		expect(markdown.getLastRenderStableText()).toBe("```sql\nold\n");
+		expect(markdown.getLastRenderStableText()).toBe("```sql\nold\nrow\n");
 
 		markdown.setText("```sql\nnew\nrow\n");
 		markdown.render(80);
 		markdown.setText("```sql\nnew\nrow\nthird\nfourth\n");
 		markdown.render(80);
-		expect(markdown.getLastRenderStableText()).toBe("```sql\nnew\nrow\nthird\n");
+		expect(markdown.getLastRenderStableText()).toBe("```sql\nnew\nrow\nthird\nfourth\n");
 	});
 
 	it("keeps an open fence plain when the highlight stream factory rejects the language", () => {
