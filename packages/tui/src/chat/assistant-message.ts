@@ -71,7 +71,7 @@ interface FastPathItem {
 }
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
 type StablePartKind = "thinking" | "text";
-type StablePart = { kind: StablePartKind; text: string } | { kind: "spacer" };
+type StablePart = { kind: StablePartKind; text: string; streaming?: boolean } | { kind: "spacer" };
 
 /**
  * One published prefix of the block's finished content. Later snapshots extend
@@ -83,6 +83,8 @@ interface StableSnapshot {
 	// Earlier parts are immutable; only the final part needs a historical offset.
 	readonly partCount: number;
 	readonly lastTextLength: number;
+	// Snapshot-local: replay still ends at this streaming prefix after finalize.
+	readonly openTail: boolean;
 }
 
 /**
@@ -1199,6 +1201,7 @@ export class AssistantMessageComponent extends Container {
 				snapshot.lastTextLength,
 				width,
 				"replay",
+				snapshot.openTail,
 			);
 			if (this.#recordStableRows(index, width, rows)) return rows;
 		}
@@ -1220,14 +1223,21 @@ export class AssistantMessageComponent extends Container {
 		if (!parts) return;
 		const last = parts.at(-1);
 		if (!last || last.kind === "spacer") return;
-		const snapshot = { partCount: parts.length, lastTextLength: last.text.length };
+		const snapshot = { partCount: parts.length, lastTextLength: last.text.length, openTail: last.streaming === true };
 		const previous = this.#stableSnapshots.at(-1);
 		// An unmoved boundary publishes nothing whether or not it still extends
 		// the last snapshot, so most frames skip the whole-document comparison.
 		if (previous?.partCount === snapshot.partCount && previous.lastTextLength === snapshot.lastTextLength) return;
 		if (previous && !isSnapshotExtension(this.#stableParts, parts)) return;
 		this.#syncStableRenderInputs();
-		const currentRows = this.#renderStableParts(parts, parts.length, last.text.length, width, "head");
+		const currentRows = this.#renderStableParts(
+			parts,
+			parts.length,
+			last.text.length,
+			width,
+			"head",
+			snapshot.openTail,
+		);
 		// The container verifies stable rows against the blank-trimmed render.
 		if (!isRowPrefix(currentRows, trimBlankEdges(rendered))) return;
 		const previousRows = previous
@@ -1278,7 +1288,7 @@ export class AssistantMessageComponent extends Container {
 					let past = streamingMarkdownSource(item.lastText).slice(raw.length);
 					if (item.blockType === "thinking") past = past.replace(UNSETTLED_THINKING_TAIL, "");
 					if (frozen.length > 0 && /\S/.test(past)) {
-						parts.push({ kind: item.blockType, text: frozen });
+						parts.push({ kind: item.blockType, text: frozen, streaming: true });
 					}
 					break;
 				}
@@ -1314,6 +1324,7 @@ export class AssistantMessageComponent extends Container {
 		lastLength: number,
 		width: number,
 		role: "head" | "replay",
+		openTail: boolean,
 	): readonly string[] {
 		const ledger = this.#stableLedger(width);
 		const rows: string[] = [];
@@ -1331,7 +1342,14 @@ export class AssistantMessageComponent extends Container {
 			if (cached?.kind === part.kind && cached.text === text) {
 				partRows = cached.rows;
 			} else {
-				partRows = this.#renderStablePart(index, part.kind, text, width, closed ? undefined : role);
+				partRows = this.#renderStablePart(
+					index,
+					part.kind,
+					text,
+					width,
+					closed ? undefined : role,
+					!closed && openTail,
+				);
 				if (closed) ledger.parts[index] = { kind: part.kind, text, rows: partRows };
 			}
 			for (const row of partRows) rows.push(row);
@@ -1350,19 +1368,26 @@ export class AssistantMessageComponent extends Container {
 		text: string,
 		width: number,
 		role: "head" | "replay" | undefined,
+		stablePrefixTail: boolean,
 	): readonly string[] {
 		// Trim like the live children, dropping the trailing blank line a frozen
 		// prefix still carries.
 		const trimmed = text.trim();
-		if (this.#transcriptBlockFinalized) return this.#createMarkdown(kind, trimmed).render(width);
+		if (this.#transcriptBlockFinalized) {
+			const md = this.#createMarkdown(kind, trimmed);
+			md.stablePrefixTail = stablePrefixTail;
+			return md.render(width);
+		}
 		const head = this.#stableHeadRenderer;
 		const replay = this.#stableReplayRenderer;
 		const renderer = role === "head" ? head : role === "replay" ? replay : head?.index === index ? head : replay;
 		if (renderer?.index === index && renderer.kind === kind) {
+			renderer.md.stablePrefixTail = stablePrefixTail;
 			renderer.md.setText(trimmed);
 			return renderer.md.render(width);
 		}
 		const md = this.#createMarkdown(kind, trimmed);
+		md.stablePrefixTail = stablePrefixTail;
 		if (role === "head") this.#stableHeadRenderer = { index, kind, md };
 		else if (role === "replay") this.#stableReplayRenderer = { index, kind, md };
 		return md.render(width);
