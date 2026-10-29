@@ -145,12 +145,8 @@ import { registerLocalInferenceApi } from "./tiny/local-inference-api";
 import { automaticThinkingLevel, concreteThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { sanitizeDisplayWarnings } from "@oh-my-pi/pi-tui/render/render-utils";
-import {
-	getChangelogPath,
-	readLastChangelogVersion,
-	resolveStartupChangelogForDisplay,
-	type StartupChangelogSelection,
-} from "./utils/changelog";
+import { getChangelogPath, readLastChangelogVersion, type StartupChangelogSelection } from "./utils/changelog";
+import { resolveZenStartupChangelogForDisplay } from "./utils/zen-changelog";
 import { EventBus } from "./utils/event-bus";
 import { resolveFirstLaunchPythonEvalWarning } from "./eval/startup-warning";
 import { CliUsageError } from "./cli/usage-error";
@@ -1205,7 +1201,7 @@ async function getChangelogForDisplay(
 		return undefined;
 	}
 
-	return resolveStartupChangelogForDisplay({
+	return resolveZenStartupChangelogForDisplay({
 		mode,
 		currentVersion: VERSION,
 		changelogPath: getChangelogPath(),

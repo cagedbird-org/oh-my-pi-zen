@@ -3,13 +3,8 @@ import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
-import {
-	getChangelogPath,
-	parseChangelog,
-	parseChangelogView,
-	renderChangelogEntries,
-	selectChangelogEntries,
-} from "../utils/changelog";
+import { getChangelogPath, parseChangelogView } from "../utils/changelog";
+import { renderZenChangelogView } from "../utils/zen-changelog";
 import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
@@ -490,13 +485,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			const view = parseChangelogView(command.args);
 			if ("error" in view) return usage(view.error, runtime);
 			const changelogPath = getChangelogPath();
-			const allEntries = await parseChangelog(changelogPath);
-			const entriesToShow = selectChangelogEntries(allEntries, view);
-			if (entriesToShow.length === 0) {
-				await runtime.output("No changelog entries found.");
-				return commandConsumed();
-			}
-			await runtime.output(renderChangelogEntries(entriesToShow).markdown);
+			const { markdown } = await renderZenChangelogView(view, { changelogPath });
+			await runtime.output(markdown);
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {

@@ -32,6 +32,7 @@
 		"dist/cli.js",
 		"dist/docs-index.generated.txt",
 		"dist/CHANGELOG-*.md",
+		"dist/ZEN_CHANGELOG-*.md",
 		"dist/*.node",
 		"dist/*.json-*.zst",
 		"dist/template-*.css",
@@ -43,7 +44,8 @@
 		"scripts",
 		"examples",
 		"README.md",
-		"CHANGELOG.md"
+		"CHANGELOG.md",
+		"ZEN_CHANGELOG.md"
 	],
 	"type": "module",
 	"main": "./src/index.ts",
