@@ -194,6 +194,8 @@ fn read_bundle(path: &Path) -> CoreResult<Application> {
 		path: path.to_owned(),
 		running: false,
 		pid: None,
+		web_browser: None,
+		executable: None,
 	})
 }
 
@@ -267,6 +269,8 @@ fn running_application(running: &NSRunningApplication) -> Option<Application> {
 		path,
 		running: !running.isTerminated(),
 		pid,
+		web_browser: None,
+		executable: None,
 	})
 }
 
@@ -726,15 +730,16 @@ mod tests {
 
 	fn window(id: &str) -> DesktopWindow {
 		DesktopWindow {
-			id:      id.into(),
-			title:   String::new(),
-			app:     "Contacts".into(),
-			pid:     Some(4105),
-			x:       0,
-			y:       0,
-			width:   800,
-			height:  600,
-			focused: false,
+			minimized: None,
+			id:        id.into(),
+			title:     String::new(),
+			app:       "Contacts".into(),
+			pid:       Some(4105),
+			x:         0,
+			y:         0,
+			width:     800,
+			height:    600,
+			focused:   false,
 		}
 	}
 
@@ -879,11 +884,13 @@ mod tests {
 		// Contacts was listed as pid 4105 but quit before apps.open asked it for
 		// a window; the reopen event launched it again as 4200.
 		let contacts = Application {
-			id:      "com.apple.AddressBook".into(),
-			name:    "Contacts".into(),
-			path:    "/System/Applications/Contacts.app".into(),
-			running: true,
-			pid:     Some(4105),
+			id:          "com.apple.AddressBook".into(),
+			name:        "Contacts".into(),
+			path:        "/System/Applications/Contacts.app".into(),
+			running:     true,
+			pid:         Some(4105),
+			web_browser: None,
+			executable:  None,
 		};
 		let relaunched = Application { pid: Some(4200), ..contacts.clone() };
 		let opened = open_running(

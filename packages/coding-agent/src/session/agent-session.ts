@@ -254,7 +254,9 @@ import {
 	resumeComputerTurnForOwner,
 	resumeComputerUseForOwner,
 	revokeComputerControlForOwner,
+	takeAgentDesktopClosedNotice,
 } from "../tools/computer/supervisor";
+import agentDesktopClosedNotice from "../prompts/tools/computer-agent-desktop-closed.md" with { type: "text" };
 import { isAutoQaEnabled } from "../tools/report-tool-issue";
 import {
 	buildResolveReminderMessage,
@@ -8977,7 +8979,18 @@ export class AgentSession implements SettingsScope {
 				: undefined;
 			const evalPreludeNotice = isUserQueuedMessage(message) ? this.#tools.takeEvalPreludeNotice() : undefined;
 			const sessionAgentNotice = isUserQueuedMessage(message) ? this.#tools.takeSessionAgentNotice() : undefined;
-			if (xdevMountNotice || toolRosterNotice || evalPreludeNotice || sessionAgentNotice) {
+			const desktopNotice =
+				isUserQueuedMessage(message) && takeAgentDesktopClosedNotice(this.#eval.getKernelOwnerId())
+					? {
+							role: "custom" as const,
+							customType: "agent-desktop-closed",
+							content: agentDesktopClosedNotice,
+							attribution: "agent" as const,
+							display: false,
+							timestamp: Date.now(),
+						}
+					: undefined;
+			if (xdevMountNotice || toolRosterNotice || evalPreludeNotice || sessionAgentNotice || desktopNotice) {
 				messages.splice(
 					xdevMountNoticeIndex,
 					0,
@@ -8985,6 +8998,7 @@ export class AgentSession implements SettingsScope {
 					...(toolRosterNotice ? [toolRosterNotice] : []),
 					...(evalPreludeNotice ? [evalPreludeNotice] : []),
 					...(sessionAgentNotice ? [sessionAgentNotice] : []),
+					...(desktopNotice ? [desktopNotice] : []),
 				);
 			}
 

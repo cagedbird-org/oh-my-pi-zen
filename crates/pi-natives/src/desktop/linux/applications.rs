@@ -39,6 +39,8 @@ struct Entry {
 	working_directory: Option<PathBuf>,
 	terminal:          bool,
 	dbus:              bool,
+	startup_wm_class:  Option<String>,
+	web_browser:       bool,
 }
 
 fn invalid(message: impl Into<String>) -> DesktopError {
@@ -234,6 +236,18 @@ fn read_entry(path: &Path, id: String) -> CoreResult<Entry> {
 		working_directory,
 		terminal: boolean(&values, "Terminal")?,
 		dbus: boolean(&values, "DBusActivatable")?,
+		web_browser: values
+			.get("Categories")
+			.is_some_and(|value| value.split(';').any(|item| item == "WebBrowser"))
+			|| values.get("MimeType").is_some_and(|value| {
+				value
+					.split(';')
+					.any(|item| matches!(item, "x-scheme-handler/http" | "x-scheme-handler/https"))
+			}),
+		startup_wm_class: values
+			.get("StartupWMClass")
+			.map(|value| unescape(value))
+			.transpose()?,
 	})
 }
 
@@ -510,19 +524,55 @@ impl Entry {
 		processes: &HashMap<PathBuf, Vec<u32>>,
 		bus: Option<&BusConnection>,
 	) -> Application {
-		let pid = bus.and_then(|bus| self.bus_pid(bus)).or_else(|| {
-			self
-				.executable()
-				.and_then(|exe| processes.get(&exe).and_then(|pids| pids.first()).copied())
+		let argv = self.argv().ok();
+		let executable = argv
+			.as_ref()
+			.and_then(|argv| resolve_executable(&argv[0], self.working_directory.as_deref()));
+		// Fixed positional arguments may select a script or another program;
+		// its shell/interpreter/launcher is not itself browser identity evidence.
+		let standalone_program = argv.is_some_and(|argv| {
+			argv
+				.iter()
+				.skip(1)
+				.all(|arg| arg.starts_with('-') && arg != "--")
 		});
+		let pid = bus
+			.and_then(|bus| self.bus_pid(bus))
+			.filter(|pid| !agent_desktop_process(*pid))
+			.or_else(|| {
+				executable
+					.as_ref()
+					.and_then(|exe| processes.get(exe).and_then(|pids| pids.first()).copied())
+			});
 		Application {
 			id: self.id.clone(),
 			name: self.name.clone(),
 			path: self.path.to_string_lossy().into_owned(),
 			running: pid.is_some(),
 			pid,
+			web_browser: Some(self.web_browser),
+			executable: executable
+				.filter(|_| !self.web_browser || standalone_program)
+				.map(|path| path.to_string_lossy().into_owned()),
 		}
 	}
+}
+
+fn agent_desktop_process(pid: u32) -> bool {
+	let Ok(environment) = fs::read(format!("/proc/{pid}/environ")) else {
+		return false;
+	};
+	environment.split(|byte| *byte == 0).any(|entry| {
+		let Ok(entry) = std::str::from_utf8(entry) else {
+			return false;
+		};
+		entry
+			.strip_prefix("XDG_RUNTIME_DIR=")
+			.is_some_and(|value| value.contains("/omp-agent-desktop-"))
+			|| entry
+				.strip_prefix("WAYLAND_DISPLAY=")
+				.is_some_and(|value| value.starts_with("omp-agent-"))
+	})
 }
 
 fn processes() -> HashMap<PathBuf, Vec<u32>> {
@@ -536,6 +586,9 @@ fn processes() -> HashMap<PathBuf, Vec<u32>> {
 			else {
 				continue;
 			};
+			if agent_desktop_process(pid) {
+				continue;
+			}
 			if let Ok(exe) = fs::read_link(entry.path().join("exe")) {
 				processes.entry(exe).or_default().push(pid);
 			}
@@ -582,7 +635,61 @@ pub(super) fn from_path(path: &Path) -> CoreResult<Application> {
 	Ok(read_entry(path, id)?.application(&processes(), bus.as_ref()))
 }
 
-pub(super) fn open(app: Application, activate: bool) -> CoreResult<Application> {
+pub(super) fn window_identity(path: &Path) -> (Option<String>, Option<PathBuf>) {
+	read_entry(path, path.to_string_lossy().into_owned()).map_or((None, None), |entry| {
+		let executable = entry.executable();
+		(entry.startup_wm_class, executable)
+	})
+}
+
+pub(super) fn window_process_matches(
+	pid: u32,
+	expected: Option<u32>,
+	executable: Option<&Path>,
+) -> bool {
+	let mut current = pid;
+	for _ in 0..64 {
+		if expected == Some(current)
+			|| executable.is_some_and(|exe| {
+				fs::read_link(format!("/proc/{current}/exe")).is_ok_and(|path| path == exe)
+			}) {
+			return true;
+		}
+		let Ok(stat) = fs::read_to_string(format!("/proc/{current}/stat")) else {
+			return false;
+		};
+		let Some(parent) = stat
+			.rsplit_once(')')
+			.and_then(|(_, rest)| rest.split_whitespace().nth(1))
+			.and_then(|value| value.parse::<u32>().ok())
+		else {
+			return false;
+		};
+		if parent == 0 || parent == current {
+			return false;
+		}
+		current = parent;
+	}
+	false
+}
+
+fn reusable_instance(
+	current: &Application,
+	windows: Option<&[crate::desktop::types::DesktopWindow]>,
+) -> bool {
+	windows.map_or(current.running, |windows| {
+		let id = current.id.strip_suffix(".desktop").unwrap_or(&current.id);
+		windows.iter().any(|window| {
+			window.app.eq_ignore_ascii_case(id) || window.pid.is_some() && window.pid == current.pid
+		})
+	})
+}
+
+pub(super) fn open(
+	app: Application,
+	activate: bool,
+	windows: Option<&[crate::desktop::types::DesktopWindow]>,
+) -> CoreResult<Application> {
 	let entry = read_entry(Path::new(&app.path), app.id)?;
 	// Preflight before launching: XWayland cannot activate arbitrary native
 	// Wayland windows, and Wayland tokens require an originating user gesture.
@@ -590,7 +697,10 @@ pub(super) fn open(app: Application, activate: bool) -> CoreResult<Application> 
 	let bus = BusConnection::session();
 	let current = entry.application(&processes(), bus.as_ref().ok());
 	let executable = entry.executable();
-	if current.running {
+	// A service process (for example dolphin --daemon) cannot be reused as
+	// a visible instance. KWin callers supply compositor-scoped windows;
+	// inventory running/pid intentionally continue to describe processes.
+	if reusable_instance(&current, windows) {
 		if let Some(activation) = activation {
 			activation.activate(executable.as_deref(), current.pid, entry.terminal)?;
 		}
@@ -909,6 +1019,59 @@ mod tests {
 	}
 
 	#[test]
+	fn browser_metadata_comes_from_categories_or_http_scheme_handlers() {
+		let directory =
+			std::env::temp_dir().join(format!("omp-browser-entry-{}", std::process::id()));
+		std::fs::create_dir(&directory).unwrap();
+		let path = directory.join("fixture.desktop");
+		for (metadata, browser) in [
+			("Categories=Network;WebBrowser;", true),
+			("MimeType=x-scheme-handler/http;", true),
+			("MimeType=x-scheme-handler/https;", true),
+			("Categories=Utility;\nMimeType=text/plain;", false),
+			("Categories=NotWebBrowser;\nMimeType=x-scheme-handler/https-other;", false),
+		] {
+			std::fs::write(
+				&path,
+				format!(
+					"[Desktop Entry]\nType=Application\nName=Fixture\nExec=/bin/true\n{metadata}\n"
+				),
+			)
+			.unwrap();
+			let entry = super::read_entry(&path, "fixture.desktop".into()).unwrap();
+			let app = entry.application(&std::collections::HashMap::new(), None);
+			assert_eq!(app.web_browser, Some(browser), "{metadata}");
+			assert_eq!(
+				app.executable.as_deref(),
+				std::fs::canonicalize("/bin/true").unwrap().to_str()
+			);
+		}
+		for (exec, browser_program) in [
+			("/bin/true --new-window %U", true),
+			("/bin/sh /fixture/browser-wrapper", false),
+			("/bin/sh -c 'exec browser'", false),
+			("/bin/true wrapper.py %u", false),
+			("/bin/true browser %U", false),
+		] {
+			let source = [
+				"[Desktop Entry]",
+				"Type=Application",
+				"Name=Fixture",
+				&format!("Exec={exec}"),
+				"Categories=WebBrowser;",
+				"",
+			]
+			.join("\n");
+			std::fs::write(&path, source).unwrap();
+			let entry = super::read_entry(&path, "fixture.desktop".into()).unwrap();
+			let app = entry.application(&std::collections::HashMap::new(), None);
+			assert_eq!(app.web_browser, Some(true));
+			assert_eq!(app.executable.is_some(), browser_program, "{exec}");
+		}
+		std::fs::remove_dir_all(directory).unwrap();
+	}
+
+	#[test]
 	fn expands_desktop_fields_without_splitting_values() {
 		assert_eq!(parse("/usr/bin/example %c %i %k %U %%").unwrap(), [
 			"/usr/bin/example",
@@ -966,5 +1129,38 @@ mod tests {
 	fn removes_absent_inputs_and_deprecated_codes() {
 		assert_eq!(parse("app %f %d %D %n %N %v %m").unwrap(), ["app"]);
 		assert_eq!(exec_argv("app %i", "Name", None, Path::new("/app.desktop")).unwrap(), ["app"]);
+	}
+
+	#[test]
+	fn windowless_service_is_not_a_reusable_instance() {
+		let app = super::Application {
+			id:          "org.kde.dolphin.desktop".into(),
+			name:        "Dolphin".into(),
+			path:        "/usr/share/applications/org.kde.dolphin.desktop".into(),
+			running:     true,
+			pid:         Some(42),
+			web_browser: None,
+			executable:  None,
+		};
+		assert!(super::reusable_instance(&app, None));
+		assert!(!super::reusable_instance(&app, Some(&[])));
+		let mut window = crate::desktop::types::DesktopWindow {
+			id:        "kwin:test".into(),
+			app:       "other.app".into(),
+			title:     String::new(),
+			pid:       Some(99),
+			x:         0,
+			y:         0,
+			width:     100,
+			height:    100,
+			focused:   false,
+			minimized: Some(false),
+		};
+		assert!(!super::reusable_instance(&app, Some(std::slice::from_ref(&window))));
+		window.app = "org.kde.dolphin".into();
+		assert!(super::reusable_instance(&app, Some(std::slice::from_ref(&window))));
+		window.app = "other.app".into();
+		window.pid = app.pid;
+		assert!(super::reusable_instance(&app, Some(&[window])));
 	}
 }

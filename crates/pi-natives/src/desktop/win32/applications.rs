@@ -198,7 +198,15 @@ fn describe_path(path: &Path) -> CoreResult<Application> {
 	let canonical = fs::canonicalize(path)
 		.map_err(|error| io_error(&format!("resolve application {}", path.display()), error))?;
 	let path = path_string(&canonical)?;
-	Ok(Application { id: path.clone(), name, path, running: false, pid: None })
+	Ok(Application {
+		id: path.clone(),
+		name,
+		path,
+		running: false,
+		pid: None,
+		web_browser: None,
+		executable: None,
+	})
 }
 
 fn programs_folder(id: &GUID) -> CoreResult<Option<PathBuf>> {
@@ -537,6 +545,8 @@ fn packaged_applications(
 			name,
 			running: pid.is_some(),
 			pid,
+			web_browser: None,
+			executable: None,
 		});
 	}
 	Ok(())

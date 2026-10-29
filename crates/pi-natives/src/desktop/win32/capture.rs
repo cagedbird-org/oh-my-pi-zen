@@ -156,6 +156,7 @@ fn window_snapshots(focused_only: bool) -> CoreResult<Vec<DesktopWindow>> {
 			continue;
 		}
 		result.push(DesktopWindow {
+			minimized: None,
 			id: id.to_string(),
 			title,
 			app,

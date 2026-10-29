@@ -2331,7 +2331,7 @@ describe("computer worker round trips", () => {
 		const reply = await transport.waitFor(message => message.type === "capabilities" && message.id === "caps");
 		expect(reply.type).toBe("capabilities");
 		if (reply.type !== "capabilities" || !reply.ok) throw new Error("expected a successful capabilities reply");
-		expect(reply.capabilities).toEqual(capabilities);
+		expect(reply.capabilities).toEqual({ ...capabilities, agentDesktop: expect.any(Boolean) });
 	});
 
 	it("creates the native session once when a run and capabilities race a cold worker", async () => {

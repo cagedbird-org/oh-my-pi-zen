@@ -556,6 +556,7 @@ fn window_metadata(dictionary: &WindowDictionary) -> Option<(u32, DesktopWindow)
 		let pid =
 			window_number(dictionary, kCGWindowOwnerPID).and_then(|pid| u32::try_from(pid).ok());
 		Some((id, DesktopWindow {
+			minimized: None,
 			id: id.to_string(),
 			title,
 			app,

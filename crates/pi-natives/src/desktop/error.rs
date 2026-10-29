@@ -55,13 +55,21 @@ impl ErrorCode {
 
 #[derive(Debug, Clone)]
 pub struct DesktopError {
-	pub code:    ErrorCode,
-	pub message: String,
+	pub code:                  ErrorCode,
+	pub message:               String,
+	/// Set only by the failing input preflight, never by diagnostic text.
+	#[cfg(target_os = "linux")]
+	pub(crate) input_not_sent: bool,
 }
 
 impl DesktopError {
 	pub(crate) fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-		Self { code, message: message.into() }
+		Self {
+			code,
+			message: message.into(),
+			#[cfg(target_os = "linux")]
+			input_not_sent: false,
+		}
 	}
 
 	pub(crate) fn permission_denied(message: impl Into<String>) -> Self {
@@ -74,6 +82,11 @@ impl DesktopError {
 
 	pub(crate) fn input_failed(message: impl Into<String>) -> Self {
 		Self::new(ErrorCode::InputFailed, message)
+	}
+
+	#[cfg(target_os = "linux")]
+	pub(crate) fn input_preflight_failed(message: impl Into<String>) -> Self {
+		Self { input_not_sent: true, ..Self::input_failed(message) }
 	}
 
 	pub(crate) fn input_busy(message: impl Into<String>) -> Self {

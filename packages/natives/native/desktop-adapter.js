@@ -32,7 +32,17 @@ export function adaptDesktopSession(NativeDesktopSession) {
 		...REQUIRED_GETTERS.filter(getter => !prototype || !(getter in prototype)),
 	];
 	if (missing.length === 0) {
-		return NativeDesktopSession;
+		if (typeof NativeDesktopSession !== "function") return NativeDesktopSession;
+		return new Proxy(NativeDesktopSession, {
+			construct(target, args, newTarget) {
+				const options = args[0];
+				if ((options?.kwinBusAddress !== undefined || options?.waylandDisplay !== undefined)
+					&& (typeof target.kwinSessionOptionsVersion !== "function" || target.kwinSessionOptionsVersion() !== 1)) {
+					throw new Error("Unsupported: desktop native addon does not support KWin session options (ABI 1). Update the native addon or run bun run build:native from the repository root.");
+				}
+				return Reflect.construct(target, args, newTarget);
+			},
+		});
 	}
 	// The shared native entrypoint is also imported by non-desktop tools. Keep
 	// their imports usable, but never emulate the new ABI with unsafe fallbacks.

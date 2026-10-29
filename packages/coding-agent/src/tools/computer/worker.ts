@@ -57,6 +57,9 @@ import {
 	type ToolReply,
 } from "./protocol";
 import { describeWindowMiss } from "./window-miss";
+import { AgentDesktop, supportsAgentDesktop, type AgentDesktopFactory } from "./agent-desktop";
+const STALE_AGENT_DESKTOP =
+	"Agent desktop handle 已失效 (stale desktop generation); call computer.agentDesktop() and resolve new handles";
 
 /** A native input call; resolves to its takeover focus report when it took over. */
 type InputCall = Promise<DesktopFocusReturn | null | void>;
@@ -105,7 +108,7 @@ export interface NativeDesktopSession {
 	scroll(target: string, x: number, y: number, dx: number, dy: number, opts?: PointerOptions | null): InputCall;
 	typeText(target: string, text: string, opts?: PointerOptions | null): InputCall;
 	keyChord(target: string, keys: string[], opts?: PointerOptions | null): InputCall;
-	raiseWindow(windowId: string): Promise<void>;
+	raiseWindow(windowId: string, expectedActive?: string): Promise<void>;
 	axSnapshot(target: string, opts?: AxSnapshotOptions | null): Promise<{ text: string }>;
 	axQuery(target: string, query: AxQuery): Promise<AxNode[]>;
 	axElementAt(target: string, x: number, y: number): Promise<AxNode | null | undefined>;
@@ -156,6 +159,7 @@ type ObservationResult = ScreenshotResult & { ax: string; nodeCount: number; tru
 type PendingTool = { resolve(value: unknown): void; reject(reason?: unknown): void };
 interface ActiveRun {
 	id: string;
+	agentDesktop: boolean;
 	/** Escape stops the user acknowledged; any more stop the run. */
 	acknowledgedEscapeStops: number;
 	ac: AbortController;
@@ -1282,6 +1286,12 @@ export class ComputerWorkerCore {
 	readonly #createSession?: NativeDesktopSessionFactory;
 	readonly #unsubscribe: () => void;
 	#session?: NativeDesktopSession;
+	#agentSession?: NativeDesktopSession;
+	#agentGeneration?: string;
+	#agentSessionInit?: Promise<NativeDesktopSession>;
+	#agentSessionClosing?: Promise<void>;
+	#desktopCommandQueue: Promise<void> = Promise.resolve();
+	readonly #agentDesktop: AgentDesktop;
 	/** In-flight lazy session creation, shared so concurrent run/capabilities requests never double-create. */
 	#sessionInit?: Promise<NativeDesktopSession>;
 	#runtime?: JsRuntime;
@@ -1300,9 +1310,19 @@ export class ComputerWorkerCore {
 	/** The latest agent turn whose end was sent here; a run of that turn or earlier, arriving late, holds nothing. */
 	#releasedTurn = 0;
 
-	constructor(transport: ComputerWorkerTransport, createSession?: NativeDesktopSessionFactory) {
+	constructor(
+		transport: ComputerWorkerTransport,
+		createSession?: NativeDesktopSessionFactory,
+		createAgentDesktop: AgentDesktopFactory = (changed, closed) => new AgentDesktop(changed, closed),
+	) {
 		this.#transport = transport;
 		this.#createSession = createSession;
+		this.#agentDesktop = createAgentDesktop(
+			resources => this.#transport.send({ type: "agent-desktop-resources", resources }),
+			() => {
+				void this.#stopAgentDesktop(true);
+			},
+		);
 		this.#unsubscribe = transport.onMessage(message => this.handle(message));
 		this.#transport.send({ type: "ready" });
 	}
@@ -1319,22 +1339,28 @@ export class ComputerWorkerCore {
 			case "capabilities":
 				void this.#capabilities(message);
 				return;
+			case "agent-desktop":
+				this.#desktopCommandQueue = this.#desktopCommandQueue.then(() => this.#desktopCommand(message));
+				return;
 			case "abort":
 				if (this.#active?.id === message.id) this.#active.ac.abort(new ToolAbortError());
 				return;
 			case "revoke-control":
 				this.#active?.ac.abort(new ToolAbortError("Computer control revoked"));
 				this.#session?.cancel();
+				this.#agentSession?.cancel();
 				this.#transport.send({ type: "control-revoked", id: message.id });
 				return;
 			case "release-display":
 				this.#releasedTurn = Math.max(this.#releasedTurn, message.turn);
 				this.#session?.releaseDisplayAwake();
+				this.#agentSession?.releaseDisplayAwake();
 				return;
 			case "resume-display":
 				if (this.#active?.displayTurn !== message.from) return;
 				this.#active.displayTurn = message.turn;
 				this.#session?.holdDisplayUntilReleased();
+				this.#agentSession?.holdDisplayUntilReleased();
 				return;
 			case "tool-reply":
 				this.#deliverToolReply(message.id, message.reply);
@@ -1370,6 +1396,76 @@ export class ComputerWorkerCore {
 			// A failed attempt must not pin the rejection; let the next request retry.
 			this.#sessionInit = undefined;
 			throw error;
+		}
+	}
+
+	async #ensureAgentSession(
+		snapshot: ComputerSessionSnapshot,
+		escape: ComputerEscapeScope,
+	): Promise<NativeDesktopSession> {
+		await this.#agentSessionClosing;
+		if (
+			snapshot.agentDesktopGeneration !== undefined &&
+			(!this.#agentSession || snapshot.agentDesktopGeneration !== this.#agentGeneration)
+		)
+			throw new ToolError(STALE_AGENT_DESKTOP);
+		if (this.#agentSession) return this.#agentSession;
+		this.#agentSessionInit ??= (async () => {
+			const address = await this.#agentDesktop.start();
+			this.#transport.send({ type: "agent-desktop-state", state: this.#agentDesktop.state });
+			try {
+				// Desktop addon loading stays lazy so worker readiness works without a platform addon.
+				const create = this.#createSession ?? (await import("@oh-my-pi/pi-natives/desktop")).createDesktopSession;
+				const session = await create({ ...address, display: snapshot.display, escapeStopKey: escape.key });
+				this.#agentSession = session;
+				this.#agentGeneration = crypto.randomUUID();
+				return session;
+			} catch (error) {
+				await this.#agentDesktop.stop();
+				this.#transport.send({ type: "agent-desktop-state", state: "stopped" });
+				throw nativeError(error);
+			}
+		})();
+		try {
+			return await this.#agentSessionInit;
+		} finally {
+			this.#agentSessionInit = undefined;
+		}
+	}
+
+	async #stopAgentDesktop(closedByUser = false): Promise<void> {
+		if (this.#agentSessionClosing) return this.#agentSessionClosing;
+		this.#agentSessionClosing = (async () => {
+			if (this.#active?.agentDesktop) this.#active.ac.abort(new ToolAbortError("Agent desktop closed"));
+			await this.#agentSessionInit?.catch(() => {});
+			try {
+				await this.#agentSession?.close();
+			} finally {
+				this.#agentSession = undefined;
+				this.#agentGeneration = undefined;
+				await this.#agentDesktop.stop();
+				this.#transport.send({ type: "agent-desktop-state", state: "stopped", closedByUser });
+			}
+		})();
+		try {
+			await this.#agentSessionClosing;
+		} finally {
+			this.#agentSessionClosing = undefined;
+		}
+	}
+
+	async #desktopCommand(message: Extract<ComputerWorkerInbound, { type: "agent-desktop" }>): Promise<void> {
+		try {
+			if (this.#closed) throw new ToolError("Computer worker is closed");
+			await this.#agentSessionClosing;
+			if (message.command === "stop") {
+				if (message.expectedGeneration === undefined || message.expectedGeneration === this.#agentGeneration)
+					await this.#stopAgentDesktop();
+			} else if (message.command === "toggle") await this.#agentDesktop.toggle();
+			else await this.#agentDesktop.start();
+			this.#transport.send({ type: "agent-desktop", id: message.id, ok: true, state: this.#agentDesktop.state });
+		} catch (error) {
+			this.#transport.send({ type: "agent-desktop", id: message.id, ok: false, error: errorPayload(error) });
 		}
 	}
 
@@ -1409,6 +1505,7 @@ export class ComputerWorkerCore {
 		const signal = AbortSignal.any([timeoutSignal, ac.signal, runAc.signal]);
 		const active: ActiveRun = {
 			id: message.id,
+			agentDesktop: message.session.agentDesktop === true,
 			acknowledgedEscapeStops: message.escape.acknowledged,
 			ac,
 			signal,
@@ -1419,10 +1516,11 @@ export class ComputerWorkerCore {
 		// Cancel synchronously while this run owns the native session, including
 		// fire-and-forget operations still pending when the script returns.
 		let nativeCancelled = false;
+		let ownedSession: NativeDesktopSession | undefined;
 		const onNativeCancel = (): void => {
-			if (this.#active === active && this.#session) {
-				this.#session.cancel();
-				nativeCancelled = true;
+			if (this.#active === active) {
+				ownedSession?.cancel();
+				nativeCancelled = ownedSession !== undefined;
 			}
 		};
 		signal.addEventListener("abort", onNativeCancel, { once: true });
@@ -1442,8 +1540,13 @@ export class ComputerWorkerCore {
 		let completed = false;
 		try {
 			throwIfAborted(signal);
-			await this.#ensureSession(message.session, message.escape);
-			const session = this.#guarded!;
+			if (message.session.agentDesktop && !message.session.agentDesktopGeneration)
+				throw new ToolError(STALE_AGENT_DESKTOP);
+			const rawSession = message.session.agentDesktop
+				? await this.#ensureAgentSession(message.session, message.escape)
+				: await this.#ensureSession(message.session, message.escape);
+			ownedSession = rawSession;
+			const session = message.session.agentDesktop ? this.#guard(rawSession) : this.#guarded!;
 			throwIfAborted(signal);
 			// An Escape after the host's check still ends the run before the script starts.
 			this.#checkEscape();
@@ -1455,7 +1558,7 @@ export class ComputerWorkerCore {
 			if (message.session.backgroundFallback === "refuse" && session.controlState().active) session.releaseControl();
 			const runtime = this.#ensureRuntime(message.session);
 			runtime.setCwd(message.session.cwd);
-			const desktop = this.#createDesktopScope(session);
+			const desktop = this.#createDesktopScope(session, message.session.agentDesktop === true);
 			runtime.setRunScope({
 				desktop: bindRunFacade(desktop, signal),
 				assert: (condition: unknown, text?: string): void => {
@@ -1513,8 +1616,8 @@ export class ComputerWorkerCore {
 			// Successful helper completion invalidates outstanding native work but
 			// preserves an explicitly acquired task grant. Errors revoke it.
 			signal.removeEventListener("abort", onNativeCancel);
-			if (failure === undefined && !signal.aborted) this.#session?.retire();
-			else if (!nativeCancelled) this.#session?.cancel();
+			if (failure === undefined && !signal.aborted) ownedSession?.retire();
+			else if (!nativeCancelled) ownedSession?.cancel();
 			runAc.abort(postmortem.markExpectedCleanupError(new ToolAbortError("Computer run ended")));
 			if (this.#active?.id === message.id) this.#active = null;
 		}
@@ -1530,7 +1633,13 @@ export class ComputerWorkerCore {
 		if (completed) {
 			let capabilities: DesktopCapabilities;
 			try {
-				capabilities = (await this.#ensureSession(message.session, message.escape)).capabilities;
+				const session = message.session.agentDesktop ? this.#agentSession! : this.#session!;
+				capabilities = Object.assign(
+					{},
+					session.capabilities,
+					{ agentDesktop: supportsAgentDesktop() },
+					message.session.agentDesktop ? { agentDesktopGeneration: this.#agentGeneration } : {},
+				);
 			} catch (error) {
 				this.#transport.send({
 					type: "result",
@@ -1556,7 +1665,12 @@ export class ComputerWorkerCore {
 	 */
 	#checkEscape(cause?: unknown, notice = ESCAPE_STOPPED_MESSAGE): void {
 		const active = this.#active;
-		if (!active || !this.#session || this.#session.escapeStops <= active.acknowledgedEscapeStops) return;
+		if (
+			!active ||
+			Math.max(this.#session?.escapeStops ?? 0, this.#agentSession?.escapeStops ?? 0) <=
+				active.acknowledgedEscapeStops
+		)
+			return;
 		if (active.escapeStop) throw active.escapeStop;
 		// What the stopped operation reported (a key left held, the user's app not handed back) stays first.
 		const stopped = new ToolError(cause === undefined ? notice : `${nativeError(cause).message}\n\n${notice}`);
@@ -1567,12 +1681,18 @@ export class ComputerWorkerCore {
 
 	/** Checks for the user's Escape before every access to the session and again when each native promise settles. */
 	#guard(session: NativeDesktopSession): NativeDesktopSession {
+		const generation = session === this.#agentSession ? this.#agentGeneration : undefined;
+		const checkGeneration = (): void => {
+			if (generation !== undefined && generation !== this.#agentGeneration) throw new ToolError(STALE_AGENT_DESKTOP);
+		};
 		return new Proxy(session, {
 			get: (target, property) => {
+				checkGeneration();
 				this.#checkEscape();
 				const value = Reflect.get(target, property, target);
 				if (typeof value !== "function") return value;
 				return (...args: unknown[]): unknown => {
+					checkGeneration();
 					this.#checkEscape();
 					const result = Reflect.apply(value, target, args);
 					if (!(result instanceof Promise)) return result;
@@ -1580,6 +1700,8 @@ export class ComputerWorkerCore {
 						settled => {
 							// The call finished and its input went out; the stop ends the run after it.
 							this.#checkEscape(undefined, ESCAPE_AFTER_CALL_MESSAGE);
+							if (session === this.#agentSession && property === "listWindows")
+								this.#agentDesktop.rememberWindows(settled as DesktopWindow[]);
 							return settled;
 						},
 						error => {
@@ -1624,8 +1746,20 @@ export class ComputerWorkerCore {
 			return;
 		}
 		try {
-			const session = await this.#ensureSession(message.session, message.escape);
-			this.#transport.send({ type: "capabilities", id: message.id, ok: true, capabilities: session.capabilities });
+			const session = message.session.agentDesktop
+				? await this.#ensureAgentSession(message.session, message.escape)
+				: await this.#ensureSession(message.session, message.escape);
+			this.#transport.send({
+				type: "capabilities",
+				id: message.id,
+				ok: true,
+				capabilities: Object.assign(
+					{},
+					session.capabilities,
+					{ agentDesktop: supportsAgentDesktop() },
+					message.session.agentDesktop ? { agentDesktopGeneration: this.#agentGeneration } : {},
+				),
+			});
 		} catch (error) {
 			this.#transport.send({
 				type: "capabilities",
@@ -1690,8 +1824,13 @@ export class ComputerWorkerCore {
 		return context;
 	};
 
-	#createDesktopScope(session: NativeDesktopSession): object {
-		const getContext = this.#currentRunContext;
+	#createDesktopScope(session: NativeDesktopSession, agent = false): object {
+		const getContext = agent
+			? (): ComputerRunContext => {
+					const context = this.#currentRunContext();
+					return { ...context, snapshot: { ...context.snapshot, backgroundFallback: "takeover" } };
+				}
+			: this.#currentRunContext;
 		const makeWin = (window: DesktopWindow): Win => new Win(session, getContext, window);
 		const el = (node: AxNode): El => new El(session, getContext, node);
 		const desktopTarget = new Win(session, getContext, {
@@ -1709,7 +1848,12 @@ export class ComputerWorkerCore {
 				const { signal } = getContext();
 				throwIfAborted(signal);
 				try {
-					return session.capabilities;
+					return Object.assign(
+						{},
+						session.capabilities,
+						{ agentDesktop: supportsAgentDesktop() },
+						agent ? { agentDesktopGeneration: this.#agentGeneration } : {},
+					);
 				} catch (error) {
 					throw nativeError(error);
 				}
@@ -1755,7 +1899,25 @@ export class ComputerWorkerCore {
 			apps: {
 				list: async (options?: ApplicationQuery): Promise<Application[]> => {
 					const { signal } = getContext();
-					return await nativeCall(signal, () => session.listApplications(options));
+					if (!agent) return await nativeCall(signal, () => session.listApplications(options));
+					const applications = await nativeCall(signal, () => session.listApplications({ query: options?.query }));
+					const windows = await nativeCall(signal, () => session.listWindows());
+					return applications
+						.map(application => {
+							const identity = application.id.replace(/\.desktop$/, "").toLocaleLowerCase();
+							const window = windows.find(
+								window =>
+									window.app.toLocaleLowerCase() === identity ||
+									(window.pid !== undefined && window.pid === application.pid),
+							);
+							const { pid: _hostPid, ...inventory } = application;
+							return {
+								...inventory,
+								running: !!window,
+								...(window?.pid === undefined ? {} : { pid: window.pid }),
+							};
+						})
+						.filter(application => !options?.runningOnly || application.running);
 				},
 				open: async (
 					id: string,
@@ -1785,11 +1947,74 @@ export class ComputerWorkerCore {
 					// A relative path names an item in the session's folder, not the omp process's.
 					const listed = async (value: string): Promise<boolean> =>
 						(await nativeCall(context.signal, () => session.listApplications())).some(
-							app => app.id === value || app.path === value,
+							app => app.id === value || (agent && app.id === `${value}.desktop`) || app.path === value,
 						);
 					const cwd = context.snapshot.cwd;
 					const target = await sessionPath(id, cwd, listed);
 					if (typeof open.app === "string") open.app = await sessionPath(open.app, cwd, listed);
+					if (agent) {
+						if (open.app !== undefined || open.reveal !== undefined)
+							throw new ToolError("Agent desktop apps.open does not support app or reveal on Linux");
+						const applications = await nativeCall(context.signal, () => session.listApplications());
+						const exact = applications.filter(app => app.id === target || app.path === target);
+						const ids = exact.length ? exact : applications.filter(app => app.id === `${target}.desktop`);
+						const matches = ids.length
+							? ids
+							: applications.filter(app => app.name.toLocaleLowerCase() === target.toLocaleLowerCase());
+						if (matches.length > 1) throw new ToolError(`Ambiguous application: ${target}`);
+						const executable = matches.length ? undefined : (Bun.which(target) ?? undefined);
+						const resolvedExecutable = executable
+							? await fs.realpath(executable).catch(() => executable)
+							: undefined;
+						if (
+							matches.some(app => app.webBrowser) ||
+							(resolvedExecutable &&
+								applications.some(app => app.webBrowser && app.executable === resolvedExecutable))
+						) {
+							throw new ToolError("Agent desktop does not open browsers; use the browser tool for web tasks.");
+						}
+						const app =
+							matches[0] ??
+							(executable ? { id: target, name: target, path: executable, running: false } : undefined);
+						if (!app) throw new ToolError(`Application not found: ${target}`);
+						const beforeWindows = await nativeCall(context.signal, () => session.listWindows());
+						const before = new Set(beforeWindows.map(win => win.id));
+						const previous = beforeWindows.find(win => win.focused);
+						const launched = await this.#agentDesktop.openApplication(app, executable);
+						const until = Date.now() + 3000;
+						do {
+							throwIfAborted(context.signal);
+							if (launched.exitCode !== null && launched.exitCode !== 0)
+								throw new ToolError(`Application ${target} exited with status ${launched.exitCode}`);
+							const windows = await nativeCall(context.signal, () => session.listWindows());
+							const shown =
+								windows.find(win => !before.has(win.id)) ??
+								windows.find(win => win.app.toLocaleLowerCase().includes(app.name.toLocaleLowerCase()));
+							if (shown) {
+								let current = shown;
+								if (
+									open.activate !== true &&
+									shown.focused &&
+									previous &&
+									windows.some(win => win.id === previous.id)
+								) {
+									await nativeCall(context.signal, () => session.raiseWindow(previous.id, shown.id));
+									current =
+										(await nativeCall(context.signal, () => session.listWindows())).find(
+											win => win.id === shown.id,
+										) ?? shown;
+								}
+								return {
+									...app,
+									running: true,
+									pid: shown.pid,
+									window: makeWin(current),
+								};
+							}
+							await Bun.sleep(50);
+						} while (Date.now() < until);
+						return { ...app, running: false, pid: undefined, window: null };
+					}
 					const { window: shown, ...application } = await nativeCall(context.signal, () =>
 						session.openApplication(target, open),
 					);
@@ -1812,7 +2037,7 @@ export class ComputerWorkerCore {
 					if (typeof options.reason !== "string" || !options.reason.trim())
 						throw new ToolError("control.acquire requires a non-empty reason");
 					if (session.controlState().active) return { active: true };
-					const verdict = await context.confirmControl(options.reason);
+					const verdict = agent ? "approved" : await context.confirmControl(options.reason);
 					throwIfAborted(context.signal);
 					if (verdict !== "approved") return { active: false, reason: verdict };
 					return await nativeCall(context.signal, () => session.acquireControl());
@@ -1905,6 +2130,7 @@ export class ComputerWorkerCore {
 				read: async (): Promise<string> => {
 					const { signal } = getContext();
 					throwIfAborted(signal);
+					if (agent) return await this.#agentDesktop.clipboardRead();
 					// Clipboard access is part of the native desktop surface and remains
 					// outside the worker's readiness-only import graph.
 					const { readTextFromClipboard } = await import("../../utils/clipboard");
@@ -1916,6 +2142,10 @@ export class ComputerWorkerCore {
 					const context = getContext();
 					guardRun(context, "clipboard.write");
 					validateString(text, "clipboard.write(text)");
+					if (agent) {
+						await this.#agentDesktop.clipboardWrite(text);
+						return;
+					}
 					// Clipboard access is part of the native desktop surface and remains
 					// outside the worker's readiness-only import graph.
 					const { copyToClipboard } = await import("../../utils/clipboard");
@@ -1942,6 +2172,8 @@ export class ComputerWorkerCore {
 		this.#closed = true;
 		this.#active?.ac.abort(new ToolAbortError());
 		try {
+			await this.#desktopCommandQueue;
+			await this.#stopAgentDesktop();
 			await this.#session?.close();
 		} catch {
 			// Closing is best-effort; the worker is exiting and has no request to report this against.
