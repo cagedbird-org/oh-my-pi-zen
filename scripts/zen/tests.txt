@@ -7,3 +7,4 @@ packages/coding-agent/test/cli/update-cli.test.ts
 packages/coding-agent/test/update-cli.test.ts
 packages/coding-agent/test/collab
 packages/collab-web/test
+zen/collab-relay/relay.test.ts
