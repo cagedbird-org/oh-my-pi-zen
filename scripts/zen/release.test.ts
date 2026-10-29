@@ -3,12 +3,15 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
+import { stageCollabRelay } from "./collab-relay";
 import { stageCollabWeb } from "./collab-web";
 import { npmPublishEnvironment } from "./publish-auth";
 import {
+	collabRelayName,
 	collabWebName,
 	packedFilename,
 	publishOrder,
+	releaseNames,
 	rewriteZenText,
 	syncPublishedPackages,
 	transformManifest,
@@ -97,6 +100,51 @@ test("reads npm 11 and npm 12 pack output", () => {
 	expect(packedFilename('{"@oh-my-pi-zen/pi-ai":{"filename":"zen.tgz"}}')).toBe("zen.tgz");
 	expect(() => packedFilename("{}")).toThrow("Expected one npm pack result");
 });
+
+test("the release set contains exactly 17 approved packages including the relay leaf", () => {
+	expect(releaseNames.size).toBe(17);
+	expect(releaseNames.has(collabRelayName)).toBe(true);
+	expect(releaseNames.has("@oh-my-pi-zen/unapproved")).toBe(false);
+});
+
+test("compiles and packs a versioned Linux x64 relay leaf in an isolated fixture", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "zen-relay-stage-test-"));
+	try {
+		await Bun.write(path.join(root, "package.json"), JSON.stringify({ license: "MIT" }));
+		await Bun.write(path.join(root, "LICENSE"), "MIT fixture license");
+		await Bun.write(
+			path.join(root, "zen/collab-relay/main.ts"),
+			'declare const COLLAB_RELAY_VERSION: string; if (process.argv.includes("--version")) console.log(COLLAB_RELAY_VERSION);',
+		);
+		await Bun.write(path.join(root, "zen/collab-relay/source-hash.ts"), `console.log("${"a".repeat(64)}");`);
+		const dir = await stageCollabRelay(root, "18.13.3-zen.2");
+		const manifest = (await Bun.file(path.join(dir, "package.json")).json()) as Manifest;
+		expect(manifest).toEqual({
+			name: collabRelayName,
+			version: "18.13.3-zen.2",
+			description: "Standalone collab relay for Linux x64",
+			license: "MIT",
+			repository: {
+				type: "git",
+				url: "git+https://github.com/cagedbird-org/oh-my-pi-zen.git",
+				directory: "zen/collab-relay",
+			},
+			os: ["linux"],
+			cpu: ["x64"],
+			files: ["collab-relay", "source-hash", "LICENSE"],
+		});
+		expect((await fs.stat(path.join(dir, "collab-relay"))).mode & 0o111).toBe(0o111);
+		expect(await Bun.file(path.join(dir, "source-hash")).text()).toBe(`${"a".repeat(64)}\n`);
+		if (process.platform === "linux" && process.arch === "x64")
+			expect((await $`${path.join(dir, "collab-relay")} --version`.quiet()).text()).toBe("18.13.3-zen.2\n");
+		const result = await $`npm pack --ignore-scripts --json`.cwd(dir).quiet();
+		const archive = path.join(dir, packedFilename(result.text()));
+		const files = (await $`tar -tzf ${archive}`.quiet()).text().trim().split("\n").sort();
+		expect(files).toEqual(["package/LICENSE", "package/collab-relay", "package/package.json", "package/source-hash"]);
+	} finally {
+		await fs.rm(root, { recursive: true, force: true });
+	}
+}, 60_000);
 
 test("stages a version-pinned static collab-web npm package without analytics or runtime dependencies", async () => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "zen-web-stage-test-"));
@@ -217,5 +265,144 @@ test("requests mirror sync with PUT for every published package and does not fai
 		fetchSpy.mockRestore();
 		warn.mockRestore();
 		log.mockRestore();
+	}
+});
+
+describe("collab mirror relay deployment", () => {
+	for (const scenario of ["unchanged", "healthy", "unhealthy", "web-failure"] as const) {
+		test(
+			scenario,
+			async () => {
+				const root = await fs.mkdtemp(path.join(os.tmpdir(), "zen-mirror-test-"));
+				const relayRoot = path.join(root, "relay");
+				const webRoot = path.join(root, "web");
+				const log = path.join(root, "restarts");
+				const oldVersion = "18.13.3-zen.1";
+				const version = "18.13.3-zen.2";
+				const hash = "a".repeat(64);
+				const archives = new Map<string, Uint8Array>();
+				const metadata = new Map<
+					string,
+					{ name: string; version: string; dist: { tarball: string; integrity: string } }
+				>();
+				let healthRequests = 0;
+				let handshakes = 0;
+				const probeRooms = new Set<string>();
+				const server = Bun.serve({
+					hostname: "127.0.0.1",
+					port: 0,
+					fetch(request, server) {
+						const url = new URL(request.url);
+						if (url.pathname === "/healthz") {
+							healthRequests++;
+							return new Response("ok rooms=0");
+						}
+						if (/^\/r\/hc[A-Za-z0-9_-]{24}$/.test(url.pathname) && url.search === "?role=guest") {
+							handshakes++;
+							probeRooms.add(url.pathname);
+							if (server.upgrade(request)) return;
+							return new Response("upgrade required", { status: 426 });
+						}
+						const bytes = archives.get(url.pathname);
+						if (bytes) return new Response(bytes);
+						const entry = metadata.get(
+							decodeURIComponent(url.pathname)
+								.replace(/^\//, "")
+								.replace(/\/latest$/, ""),
+						);
+						return entry ? Response.json(entry) : new Response("not found", { status: 404 });
+					},
+					websocket: {
+						open(ws) {
+							ws.close(scenario === "unhealthy" ? 4001 : 4004);
+						},
+						message() {},
+					},
+				});
+				try {
+					await Bun.write(path.join(relayRoot, "releases", oldVersion, "source-hash"), `${hash}\n`);
+					await Bun.write(path.join(relayRoot, "releases", oldVersion, "collab-relay"), "old binary");
+					await fs.symlink(`releases/${oldVersion}`, path.join(relayRoot, "current"));
+					for (const [name, files] of [
+						[collabWebName, { "dist/index.html": "new site" }],
+						[
+							collabRelayName,
+							{
+								"collab-relay": "new binary",
+								"source-hash": `${scenario === "unchanged" ? hash : "b".repeat(64)}\n`,
+							},
+						],
+					] as const) {
+						const source = path.join(root, name.slice(name.lastIndexOf("/") + 1));
+						await Bun.write(path.join(source, "package/package.json"), JSON.stringify({ name, version }));
+						for (const [file, content] of Object.entries(files))
+							await Bun.write(path.join(source, "package", file), content);
+						const archive = path.join(source, "fixture.tgz");
+						await $`tar -czf ${archive} -C ${source} package`.quiet();
+						const bytes = new Uint8Array(await Bun.file(archive).arrayBuffer());
+						const digest = new Bun.CryptoHasher("sha512").update(bytes).digest("base64");
+						const pathname = `/${path.basename(source)}.tgz`;
+						archives.set(pathname, bytes);
+						metadata.set(name, {
+							name,
+							version,
+							dist: {
+								tarball: new URL(pathname, server.url).href,
+								integrity: `sha512-${scenario === "web-failure" && name === collabWebName ? Buffer.alloc(64).toString("base64") : digest}`,
+							},
+						});
+					}
+					const restart = path.join(root, "restart.ts");
+					await Bun.write(
+						restart,
+						'import { appendFile, readlink } from "node:fs/promises"; await appendFile(process.argv[2], `${await readlink(process.argv[3])}\\n`);',
+					);
+					const result = await $`python3 ${path.join(import.meta.dir, "collab-web-mirror.py")}`
+						.env({
+							...process.env,
+							OMP_COLLAB_WEB_ROOT: webRoot,
+							OMP_COLLAB_RELAY_ROOT: relayRoot,
+							OMP_COLLAB_WEB_REGISTRIES: server.url.href,
+							OMP_COLLAB_RELAY_HEALTH: `127.0.0.1:${server.port}`,
+							OMP_COLLAB_RELAY_RESTART: `${process.execPath} ${restart} ${log} ${path.join(relayRoot, "current")}`,
+						})
+						.quiet()
+						.nothrow();
+					expect(result.exitCode).toBe(scenario === "unhealthy" || scenario === "web-failure" ? 1 : 0);
+					expect(await fs.readlink(path.join(relayRoot, "current"))).toBe(
+						`releases/${scenario === "unhealthy" ? oldVersion : version}`,
+					);
+					if (scenario === "web-failure") {
+						expect(await Bun.file(path.join(webRoot, "current/index.html")).exists()).toBe(false);
+						expect(result.stderr.toString()).toContain("sha512 integrity mismatch");
+					} else {
+						expect(await Bun.file(path.join(webRoot, "current/index.html")).text()).toBe("new site");
+					}
+					if (scenario === "unchanged") {
+						expect(await Bun.file(log).exists()).toBe(false);
+						expect(healthRequests).toBe(0);
+						expect(handshakes).toBe(0);
+					} else {
+						const restarts = (await Bun.file(log).text()).trim().split("\n");
+						expect(restarts).toEqual(
+							scenario === "unhealthy"
+								? [`releases/${version}`, `releases/${oldVersion}`]
+								: [`releases/${version}`],
+						);
+						expect(healthRequests).toBeGreaterThan(0);
+						expect(handshakes).toBeGreaterThan(0);
+						expect(probeRooms.size).toBe(handshakes);
+						if (scenario === "unhealthy") expect(result.stderr.toString()).toContain("rolled back");
+					}
+					const binary = path.join(relayRoot, "releases", version, "collab-relay");
+					if (scenario === "unhealthy") expect(await Bun.file(binary).exists()).toBe(false);
+					else expect((await fs.stat(binary)).mode & 0o111).toBe(0o111);
+				} finally {
+					await server.stop(true);
+					await fs.rm(root, { recursive: true, force: true });
+				}
+			},
+			30_000,
+		);
 	}
 });

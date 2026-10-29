@@ -18,10 +18,12 @@ export const workspacePackages = [
 ] as const;
 export const nativeTags = ["linux-x64", "darwin-arm64", "linux-arm64"] as const;
 export const collabWebName = "@oh-my-pi-zen/collab-web";
+export const collabRelayName = "@oh-my-pi-zen/collab-relay-linux-x64";
 export const releaseNames = new Set<string>([
 	...workspacePackages.map(name => `@oh-my-pi-zen/${name}`),
 	...nativeTags.map(tag => `@oh-my-pi-zen/pi-natives-${tag}`),
 	collabWebName,
+	collabRelayName,
 ]);
 export interface Manifest {
 	name: string;
