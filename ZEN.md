@@ -33,13 +33,15 @@
 - `zen_number` 指定 `N`；留空时查询 npm `latest`，同一 upstream 版本递增，否则从 `1` 开始。失败重跑时填写原 `N`，已存在的精确版本会跳过。
 - `bun scripts/zen/resolve-version.ts [N]` 输出 upstream 与 zen 版本。
 - `bun scripts/zen/prepare-publish-worktree.ts --version X.Y.Z-zen.N --output /tmp/zen-publish --linux-addon <带 pipewire 的 linux-x64 addon>` 创建独立暂存树，下载官方 arm64 addon、逐一盖章、改名、构建并用 `npm pack` 生成 tarball；源工作区不改名。
-- `bun scripts/zen/ci-release-publish.ts /tmp/zen-publish` 使用 npm CLI ≥ 11.5，显式 `--tag latest --access public`。全部 16 个包通过 OIDC 发布，npm 子进程不带 token，使用独立的空 userconfig/globalconfig。暂存 manifest 的 `repository.url` 指向本 fork，与 provenance 来源一致。发布后 best-effort 请求 npmmirror 同步。
-- 发布集合为 12 个 workspace 包（`pi-utils`、`pi-wire`、`omptype`、`pi-catalog`、`pi-ai`、`pi-natives`、`pi-tui`、`pi-mnemopi`、`snapcompact`、`omp-stats`、`pi-agent-core`、`pi-coding-agent`）、三个 native leaf，以及同版本的 `collab-web` 静态包（仅生产构建与许可证，去掉 umami）。发现其他新增可发布 workspace 包时中止，先确认发布范围。leaf 先发，依赖者随后，coding-agent 最后。
+- `bun scripts/zen/ci-release-publish.ts /tmp/zen-publish` 使用 npm CLI ≥ 11.5，显式 `--tag latest --access public`。全部 17 个包通过 OIDC 发布，npm 子进程不带 token，使用独立的空 userconfig/globalconfig。暂存 manifest 的 `repository.url` 指向本 fork，与 provenance 来源一致。发布后 best-effort 请求 npmmirror 同步。
+- 发布集合为 12 个 workspace 包（`pi-utils`、`pi-wire`、`omptype`、`pi-catalog`、`pi-ai`、`pi-natives`、`pi-tui`、`pi-mnemopi`、`snapcompact`、`omp-stats`、`pi-agent-core`、`pi-coding-agent`）、三个 native leaf、`collab-web` 静态包（仅生产构建与许可证，去掉 umami），以及 `collab-relay-linux-x64` leaf（二进制与 `source-hash`）。发现其他新增可发布 workspace 包时中止，先确认发布范围。打包按依赖顺序，发布并行，已存在的精确版本跳过。
+- relay 源码在 `zen/collab-relay/`，零依赖、不进 workspace；暂存时用 `bun build --compile --target=bun-linux-x64-baseline` 注入版本（baseline 目标强制使用官方静态运行时，不依赖系统 ICU），`source-hash` 是构建 bundle 与 Bun 版本的 SHA256。
 - `zen-follow.yml` 每小时或手动检查下一个 upstream release tag，rebase、测试后用 `ZEN_DEPLOY_KEY` 推送并触发发布；失败即停用，需手动检查后重新启用。
 - zen 测试路径统一维护在 `scripts/zen/tests.txt`；本地及两个 workflow 都运行 `bun scripts/zen/run-tests.ts`。
 
-### collab-web 自托管
+### collab-web 与 relay 自托管
 
-- `scripts/zen/collab-web-mirror.py` 安装到 bj-edge 的 `/usr/local/libexec/omp-collab-web-mirror`，由原有同名 systemd timer/service 运行；沙箱写入范围仍只有 `/srv/omp-collab-web`。
-- 优先用 npmmirror 的 `latest` 元数据，同查 npm 以选择较新版本；tarball 校验 sha512 后安装到 `releases/<version>`，原子切换 `current`，保留三版。缺包或校验失败保留现站。
-- 测试可设置 `OMP_COLLAB_WEB_ROOT` 与逗号分隔的 `OMP_COLLAB_WEB_REGISTRIES`，在 scratch 目录使用本地 registry fixture，不改线上内容。
+- `scripts/zen/collab-web-mirror.py` 安装到 bj-edge 的 `/usr/local/libexec/omp-collab-web-mirror`，由原有同名 systemd timer/service 运行；沙箱写入范围为 `/srv/omp-collab-web` 与 `/srv/omp-collab-relay`，切换时用 drop-in 为镜像 service 增加 `ReadWritePaths=/srv/omp-collab-relay`。
+- 两个包独立更新，任一失败不阻塞另一个；优先用 npmmirror 的 `latest` 元数据，同查 npm 以选择较新版本。tarball 校验 sha512 后安装到 `releases/<version>`，原子切换 `current`，保留三版；缺包或校验失败保留现版。
+- relay 的 `source-hash` 相同只切换链接；变化才 `systemctl restart collab-relay.service`，15 秒内须同时通过 `/healthz`（正文以 `ok` 开头）与随机房间的 guest WebSocket 握手（关闭码 4004）。失败回切旧链接并重启，脚本非零退出。
+- 测试可设置 `OMP_COLLAB_WEB_ROOT`、`OMP_COLLAB_RELAY_ROOT` 与逗号分隔的 `OMP_COLLAB_WEB_REGISTRIES`，在 scratch 目录使用本地 registry fixture；`OMP_COLLAB_RELAY_RESTART` 覆盖重启命令，`OMP_COLLAB_RELAY_HEALTH` 覆盖健康检查地址（默认 `127.0.0.1:7466`），不改线上内容。

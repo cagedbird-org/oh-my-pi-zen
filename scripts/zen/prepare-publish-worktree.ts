@@ -7,6 +7,7 @@ import { $ } from "bun";
 import { packages, prepareNativeCorePackage, rewriteManifest, stageLegalPayloads } from "../ci-release-publish";
 import { fixEmitExtensions } from "../fix-emit-extensions";
 import { generateNpmPackages } from "../../packages/natives/scripts/gen-npm-packages";
+import { stageCollabRelay } from "./collab-relay";
 import { stageCollabWeb } from "./collab-web";
 import {
 	dependencyFields,
@@ -76,6 +77,7 @@ async function buildStage(version: string): Promise<void> {
 	// The upstream native helpers construct the original scope dynamically.
 	await transformTree(repoRoot, version);
 	const webDir = await stageCollabWeb(repoRoot, version);
+	const relayDir = await stageCollabRelay(repoRoot, version);
 	const entries: ReleasePackage[] = [
 		...leaves.map(leaf => ({
 			name: rewriteZenText(leaf.manifest.name),
@@ -84,6 +86,7 @@ async function buildStage(version: string): Promise<void> {
 		})),
 		...packages.map(pkg => ({ name: "", version, dir: pkg.dir })),
 		{ name: "", version, dir: path.relative(repoRoot, webDir) },
+		{ name: "", version, dir: path.relative(repoRoot, relayDir) },
 	];
 	const manifests = new Map<string, Manifest>();
 	for (const entry of entries) {
@@ -98,6 +101,8 @@ async function buildStage(version: string): Promise<void> {
 			}
 		manifests.set(entry.name, manifest);
 	}
+	if (manifests.size !== releaseNames.size || entries.length !== releaseNames.size)
+		throw new Error("Incomplete release package set");
 	const ordered = publishOrder(entries, manifests);
 	await fs.mkdir(path.join(repoRoot, "tarballs"));
 	for (const entry of ordered) {
