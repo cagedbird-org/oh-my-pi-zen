@@ -24,6 +24,7 @@ env:
 jobs:
    release:
       runs-on: ubuntu-24.04
+      # ubuntu-24.04 is Linux x64; the relay leaf is compiled for bun-linux-x64-baseline.
       steps:
          - uses: actions/checkout@v4
          - uses: oven-sh/setup-bun@v2
