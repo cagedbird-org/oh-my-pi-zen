@@ -168,6 +168,10 @@ async function prepare(): Promise<void> {
 		recursive: true,
 		filter: source => !excluded[path.basename(source)] && !source.endsWith(".node"),
 	});
+	// npm ignores symlinks: materialize the source asset link inside the isolated package.
+	const zenChangelog = path.join(destination, "packages/coding-agent/ZEN_CHANGELOG.md");
+	await fs.unlink(zenChangelog);
+	await fs.copyFile(path.join(destination, "zen/CHANGELOG.md"), zenChangelog);
 	const stagedNative = path.join(destination, "packages/natives/native");
 	await fs.copyFile(path.resolve(addon), path.join(stagedNative, "pi_natives.linux-x64-modern.node"));
 	const download = await fs.mkdtemp(path.join(os.tmpdir(), "zen-official-addons-"));

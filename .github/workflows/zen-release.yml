@@ -15,7 +15,7 @@ concurrency:
    cancel-in-progress: false
 
 permissions:
-   contents: read
+   contents: write
    id-token: write
 
 env:
@@ -39,6 +39,11 @@ jobs:
            env:
               ZEN_NUMBER: ${{ inputs.zen_number }}
            run: bun scripts/zen/resolve-version.ts "$ZEN_NUMBER" >> "$GITHUB_OUTPUT"
+
+         - name: Validate zen release notes
+           env:
+              ZEN_VERSION: ${{ steps.meta.outputs.version }}
+           run: bun scripts/zen/release-notes.ts "$ZEN_VERSION" > "$RUNNER_TEMP/zen-release-notes.md"
 
          - name: Restore bun store
            uses: actions/cache@v4
@@ -91,3 +96,18 @@ jobs:
          # All packages use npm trusted publishing (OIDC).
          - name: Publish zen packages
            run: bun scripts/zen/ci-release-publish.ts "$RUNNER_TEMP/zen-publish"
+
+         - name: Create zen GitHub Release
+           env:
+              GH_TOKEN: ${{ github.token }}
+              GH_REPO: ${{ github.repository }}
+              ZEN_VERSION: ${{ steps.meta.outputs.version }}
+              RELEASE_TARGET: ${{ github.sha }}
+           run: |
+              tag="zen/v$ZEN_VERSION"
+              if gh release view "$tag" > /dev/null 2>&1; then
+                 echo "Skipping $tag: GitHub Release already exists"
+              else
+                 gh release create "$tag" --target "$RELEASE_TARGET" --title "$tag" \
+                    --notes-file "$RUNNER_TEMP/zen-release-notes.md" --latest
+              fi

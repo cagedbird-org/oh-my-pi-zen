@@ -196,7 +196,7 @@ export async function parseChangelog(changelogPath: string | undefined): Promise
 	return parseChangelogContent(content);
 }
 
-function parseChangelogContent(content: string): ChangelogEntry[] {
+export function parseChangelogContent(content: string): ChangelogEntry[] {
 	const lines = content.split("\n");
 	const entries: ChangelogEntry[] = [];
 
@@ -388,7 +388,7 @@ export function renderChangelogEntries(
 	return { markdown: markdown.slice(0, low) + suffix, truncated: true };
 }
 
-function selectStartupChangelogEntries(
+export function selectStartupChangelogEntries(
 	newEntries: ChangelogEntry[],
 	totalUnseenEntries: number,
 ): StartupChangelogSelection {
