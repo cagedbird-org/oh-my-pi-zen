@@ -36,6 +36,44 @@ Both Eval runtimes preserve computer images at the captured dimensions with orig
 
 `tools.approvalMode: write` allows inspection helpers (window listing, screenshots, AX reads, clipboard reads) and `computer.run` calls declared with `read_only: true`; it prompts for input and mutation helpers. An explicit `tools.approval.computer: allow | prompt | deny` overrides the mode.
 
+## Isolated agent desktop (KDE Plasma Wayland)
+
+On linux-x64 KDE Plasma Wayland with `kwin_wayland` available, `computer.capabilities()` includes `agentDesktop: true`. No extra setting is needed. The native addon must support targeted KWin sessions (`DesktopSession.kwinSessionOptionsVersion() === 1`); an older addon reports a clear error instead of silently connecting to the host.
+
+```js
+const desk = await computer.agentDesktop();
+const app = await desk.apps.open("kwrite");
+await desk.screenshot();
+await desk.clipboard.write("Isolated clipboard");
+await desk.run(async ({ desktop }) => console.log(await desktop.windows()));
+```
+
+Python exposes the same `await computer.agentDesktop()` method. The returned facade has the normal computer helpers, but windows, captures, input, AX, application launches and clipboard target a separate 1600×1000 KWin display and private session D-Bus. Repeated calls reuse the facade/session. After closure, the next `computer.agentDesktop()` call starts an empty desktop; old window and AX handles are no longer valid. `desk.close()` stops only the isolated desktop; `computer.close()` closes the whole prelude as usual.
+
+Handles and their requests carry a desktop generation automatically in both Eval languages. Reopening keeps the root facade's identity, but old window/element/display handles and retained input/inspection methods remain bound to their original generation and fail with `已失效`; they cannot target a newly reused AX ref such as `e1`. Resolve new handles after reopening. A retained `close()` is idempotent for its original generation and cannot close a replacement desktop; `/desk stop` always closes the current desktop.
+
+The agent should use this desktop when the user must not be disturbed or it needs new application windows. It starts minimized without deliberately activating the host window. Applications launch with the nested display and bus, so single-instance KDE apps do not reuse the user's existing application. Clipboard helpers use the nested Wayland selection, not the user's clipboard. This is display/input isolation, not a filesystem, account or network sandbox; ordinary approval and side-effect rules still apply.
+
+The private `XDG_RUNTIME_DIR` also isolates the AT-SPI bus socket and registry; it is removed on stop. Applications receive that registry address before launch. Screenshot dimensions may be smaller than the display because the normal model-specific capture caps still apply.
+
+A detached Python watchdog owns the private runtime before the desktop stack starts. It monitors omp's PID and Linux process start time, so it also cleans the stack if omp is killed with `SIGKILL`. Cleanup sends TERM, waits for graceful shutdown, then KILL; portal FUSE mounts are detached before the runtime is removed. Tracked application/window PIDs and process-group leaders carry start times and are checked again before signaling, so a reused PID is not treated as owned. Normal `/desk stop` finishes the watchdog too, and closing this desktop aborts only a run targeting it, not an unrelated host-desktop run.
+
+The watchdog also holds a worker-lifetime pipe from spawn onward. Worker teardown closes the only writer, so the watchdog cleans itself and its private runtime even if that worker crashes before publishing watchdog readiness to the supervisor.
+
+On the agent desktop, `apps.list()` reports `running`/`pid` only for applications with windows in that desktop; host applications and windowless background services are not counted as running.
+
+TUI commands:
+
+- `/desk`: show and activate the nested compositor window, or minimize it when visible; start it first if necessary.
+- `/desk start`: prestart hidden (leave an already-running desktop unchanged).
+- `/desk stop`: disconnect the native session, terminate the compositor/private bus/application groups, and remove socket/lock files. The next user message carries one hidden notice that its windows are gone; the system prompt/cache prefix is unchanged.
+
+Autocomplete shows not-started, hidden or visible state. Worker failure and omp exit clean up owned compositor processes too. Required desktop utilities are `python3` (the independent watchdog), `dbus-daemon`, `gdbus`, `qdbus6`, `wl-copy`, `wl-paste`, and `gio` for desktop-entry launches, plus installed AT-SPI services (`at-spi2-registryd` if the private registry is not already running). Unsupported hosts fail explicitly when `agentDesktop()` is called.
+
+### KWin backend on the host
+
+KDE Plasma Wayland reports `backend: "kwin"`. It enumerates the compositor's full window list, including minimized windows (`minimized?: boolean`), and captures individual windows with decorations but without shadows. Capturing a minimized window fails with a request to raise it first. AX operations are preferred for semantic controls; native window input with `takeover: true` can temporarily take focus. The compositor transport does not open a portal authorization dialog. Deliberately activating or raising a host window still interrupts the user's desktop; use the agent desktop for new work instead.
+
 ## Eval API and execution model
 
 The `computer` global exposes direct helpers from JavaScript or Python Eval. Each helper runs one approved call in the persistent desktop session and returns a real structured value:

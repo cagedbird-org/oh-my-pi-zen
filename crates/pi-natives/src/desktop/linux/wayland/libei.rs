@@ -53,7 +53,7 @@ struct PortalSession {
 	session: RemoteDesktopSession,
 }
 
-pub(super) struct Libei {
+pub(in crate::desktop::linux) struct Libei {
 	context:        ei::Context,
 	devices:        Vec<EiDevice>,
 	connection:     Option<reis::event::Connection>,
@@ -63,6 +63,8 @@ pub(super) struct Libei {
 	disconnected:   bool,
 	portal_session: Option<PortalSession>,
 }
+
+pub(in crate::desktop::linux) struct PreparedText(Vec<KeyStroke>);
 
 #[allow(
 	clippy::non_send_fields_in_send_ty,
@@ -130,7 +132,7 @@ fn pace_drag(
 }
 
 impl Libei {
-	pub(super) const fn disconnected(&self) -> bool {
+	pub(in crate::desktop::linux) const fn disconnected(&self) -> bool {
 		self.disconnected
 	}
 
@@ -145,6 +147,23 @@ impl Libei {
 			},
 			Err(err) => return Err(DesktopError::permission_denied(format!("LIBEI_SOCKET: {err}"))),
 		};
+		Self::from_context(context, portal_session, targets)
+	}
+
+	/// `KWin` supplies its own EIS socket; never consult `LIBEI_SOCKET` or
+	/// portals.
+	pub(in crate::desktop::linux) fn from_fd(fd: std::os::fd::OwnedFd) -> CoreResult<Self> {
+		let context = ei::Context::new(UnixStream::from(fd))
+			.map_err(|error| DesktopError::input_failed(format!("KWin EIS socket: {error}")))?;
+		Self::from_context(context, None, DiscoveryTargets::ALL)
+	}
+
+	fn from_context(
+		context: ei::Context,
+		portal_session: Option<PortalSession>,
+		targets: DiscoveryTargets,
+	) -> CoreResult<Self> {
+		let runtime = super::portal::portal_runtime()?;
 		let mut backend = Self {
 			context,
 			devices: Vec::new(),
@@ -438,7 +457,7 @@ impl Libei {
 		Ok(())
 	}
 
-	pub(super) fn pointer(&mut self, event: PointerEvent) -> CoreResult<()> {
+	pub(in crate::desktop::linux) fn pointer(&mut self, event: PointerEvent) -> CoreResult<()> {
 		self.refresh_devices()?;
 		// Preflight the complete gesture, before moving or holding anything.
 		// In particular, an invalid later drag point must not leave a button
@@ -672,11 +691,15 @@ impl Libei {
 
 	/// Presses `keys` and releases them. A shortcut fires on its last press,
 	/// so a cancel once every key is down no longer fails the call.
-	pub(super) fn key_chord(&mut self, keys: &[KeyName]) -> CoreResult<()> {
+	pub(in crate::desktop::linux) fn key_chord(&mut self, keys: &[KeyName]) -> CoreResult<()> {
 		self.with_keys(keys, || Ok(()))
 	}
 
-	pub(super) fn hold_keys(&mut self, keys: &[KeyName], duration: Duration) -> CoreResult<()> {
+	pub(in crate::desktop::linux) fn hold_keys(
+		&mut self,
+		keys: &[KeyName],
+		duration: Duration,
+	) -> CoreResult<()> {
 		self.with_keys(keys, || control::wait(duration))
 	}
 
@@ -724,7 +747,10 @@ impl Libei {
 		result.and(flushed)
 	}
 
-	pub(super) fn type_text(&mut self, text: &str) -> CoreResult<()> {
+	pub(in crate::desktop::linux) fn prepare_text(
+		&mut self,
+		text: &str,
+	) -> CoreResult<PreparedText> {
 		self.refresh_devices()?;
 		let device = self
 			.devices
@@ -740,6 +766,26 @@ impl Libei {
 				char_stroke(device.layout.as_mut(), character)
 			})
 			.collect::<CoreResult<Vec<_>>>()?;
+		Ok(PreparedText(strokes))
+	}
+
+	pub(super) fn type_text(&mut self, text: &str) -> CoreResult<()> {
+		let prepared = self.prepare_text(text)?;
+		self.type_prepared_text(prepared)
+	}
+
+	pub(in crate::desktop::linux) fn type_prepared_text(
+		&mut self,
+		prepared: PreparedText,
+	) -> CoreResult<()> {
+		let device = self
+			.devices
+			.iter_mut()
+			.find(|device| device.resumed && device.device.has_capability(DeviceCapability::Keyboard))
+			.ok_or_else(|| {
+				DesktopError::input_failed("libei keyboard disappeared after text preparation")
+			})?;
+		let PreparedText(strokes) = prepared;
 		let interface = device
 			.device
 			.interface::<ei::Keyboard>()

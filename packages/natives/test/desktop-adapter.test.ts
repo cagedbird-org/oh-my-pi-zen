@@ -52,6 +52,47 @@ describe("desktop native ABI requirements", () => {
 		const Stale = adaptDesktopSession({ prototype: prototype(false) });
 		expect(() => new Stale({ display: "active" })).toThrow(/^Unsupported: .*\(missing escapeStops\)/);
 	});
+
+	it("guards KWin options without breaking official addons' host sessions", () => {
+		class Official {
+			constructor(readonly options?: unknown) {}
+		}
+		for (const method of [
+			"click",
+			"capture",
+			"captureRegion",
+			"cancel",
+			"retire",
+			"setRunDeadline",
+			"observe",
+			"listApplications",
+			"openApplication",
+			"menuItems",
+			"menuSelect",
+			"holdKeys",
+			"holdMouse",
+			"acquireControl",
+			"releaseControl",
+			"controlState",
+			"bringToCurrentSpace",
+			"axSelectText",
+			"holdDisplayUntilReleased",
+			"releaseDisplayAwake",
+		]) {
+			Object.defineProperty(Official.prototype, method, { value: () => {} });
+		}
+		Object.defineProperty(Official.prototype, "escapeStops", { get: () => 0 });
+		const Session = adaptDesktopSession(Official);
+		expect(new Session({ display: "active" })).toBeInstanceOf(Official);
+		expect(() => new Session({ kwinBusAddress: "unix:path=/tmp/agent-bus" })).toThrow(/KWin session options/);
+		expect(() => new Session({ waylandDisplay: "agent-wayland" })).toThrow(/KWin session options/);
+		Object.defineProperty(Official, "kwinSessionOptionsVersion", { value: () => 0, configurable: true });
+		expect(() => new Session({ kwinBusAddress: "unix:path=/tmp/agent-bus" })).toThrow(/KWin session options/);
+		expect(() => new Session({ waylandDisplay: "agent-wayland" })).toThrow(/KWin session options/);
+		expect(new Session({ display: "active" })).toBeInstanceOf(Official);
+		Object.defineProperty(Official, "kwinSessionOptionsVersion", { value: () => 1 });
+		expect(new Session({ kwinBusAddress: "unix:path=/tmp/agent-bus" })).toBeInstanceOf(Official);
+	});
 });
 
 describe("lazy desktop exports", () => {

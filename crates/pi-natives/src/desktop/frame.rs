@@ -531,6 +531,7 @@ mod tests {
 	}
 	fn window(x: i32, y: i32) -> DesktopWindow {
 		DesktopWindow {
+			minimized: None,
 			id: "7".into(),
 			title: "T".into(),
 			app: "A".into(),

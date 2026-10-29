@@ -1,6 +1,5 @@
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { postmortem, untilAborted } from "@oh-my-pi/pi-utils";
-import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";
 import { closeDesktopEventTaps, desktopEscapeStops, forgetDesktopEscapeStops } from "@oh-my-pi/pi-natives/desktop";
 import { withTimeout } from "@oh-my-pi/pi-utils/async";
 import * as logger from "@oh-my-pi/pi-utils/logger";
@@ -11,6 +10,7 @@ import { ToolAbortError, toWorkerErrorPayload } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import {
 	COMPUTER_WORKER_ARG,
+	type ComputerCapabilities as DesktopCapabilities,
 	type ComputerEscapeScope,
 	type ComputerRunOk,
 	type ComputerSessionSnapshot,
@@ -22,6 +22,16 @@ import {
 	ESCAPE_STOPPED_MESSAGE,
 	type RunErrorPayload,
 } from "./protocol";
+import {
+	agentDesktopProcess,
+	killAgentDesktopResources,
+	removeAgentDesktopRuntime,
+	stopAgentDesktopResources,
+	type AgentDesktopResources,
+	type AgentDesktopState,
+} from "./agent-desktop";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 
 const START_TIMEOUT_MS = 10_000;
 const CLOSE_TIMEOUT_MS = 1_500;
@@ -52,6 +62,8 @@ export interface ComputerController {
 	/** The user's message acknowledges every Escape stop so far, lifting the refusal they set. */
 	resumeAfterEscape?(): void;
 	capabilities(snapshot: ComputerSessionSnapshot, signal?: AbortSignal): Promise<DesktopCapabilities | undefined>;
+	agentDesktop?(command: "start" | "stop" | "toggle", expectedGeneration?: string): Promise<AgentDesktopState>;
+	readonly agentDesktopState?: AgentDesktopState;
 	close(): Promise<void>;
 }
 
@@ -195,6 +207,13 @@ export class ComputerSupervisor implements ComputerController {
 	#closed = false;
 	#unsubscribeMessage?: () => void;
 	#unsubscribeError?: () => void;
+	#desktopState: AgentDesktopState = "stopped";
+	#desktopResources: AgentDesktopResources = { processes: [] };
+	#desktopPending = new Map<
+		string,
+		{ promise: Promise<AgentDesktopState>; resolve(value: AgentDesktopState): void; reject(error: unknown): void }
+	>();
+	#removeDesktopExitHook?: () => void;
 
 	constructor(
 		session: ToolSession,
@@ -210,6 +229,28 @@ export class ComputerSupervisor implements ComputerController {
 		this.#timeouts = timeouts;
 		this.#callSessionTool = callSessionTool;
 		this.#escapeStops = escapeStops;
+	}
+
+	get agentDesktopState(): AgentDesktopState {
+		return this.#desktopState;
+	}
+
+	async agentDesktop(command: "start" | "stop" | "toggle", expectedGeneration?: string): Promise<AgentDesktopState> {
+		if (this.#closed) throw new ToolError("Computer session is closed");
+		if (command === "stop" && !this.#worker) return "stopped";
+		await this.#start();
+		const id = `computer-desk-${++this.#nextId}`;
+		const pending = Promise.withResolvers<AgentDesktopState>();
+		this.#desktopPending.set(id, pending);
+		try {
+			this.#safeSend({ type: "agent-desktop", id, command, expectedGeneration });
+			return await withTimeout(pending.promise, 20000, "Timed out controlling agent desktop");
+		} catch (error) {
+			await this.#terminate(error);
+			throw error;
+		} finally {
+			this.#desktopPending.delete(id);
+		}
 	}
 
 	/** Whether the user pressed Escape since their latest message; read live, so a stop no run reported still counts. */
@@ -339,6 +380,55 @@ export class ComputerSupervisor implements ComputerController {
 	}
 
 	#handleMessage(message: ComputerWorkerOutbound): void {
+		if (message.type === "agent-desktop-resources") {
+			this.#desktopResources = message.resources;
+			this.#removeDesktopExitHook ??= postmortem.register(
+				`agent-desktop-${this.#escapeKey}`,
+				() => {
+					const watchdog = this.#desktopResources.watchdog;
+					if (watchdog && agentDesktopProcess(watchdog.pid)?.startTime === watchdog.startTime) {
+						try {
+							process.kill(watchdog.pid, "SIGTERM");
+						} catch (error) {
+							if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+						}
+						return;
+					}
+					killAgentDesktopResources(this.#desktopResources, "SIGKILL");
+					const { scriptName } = this.#desktopResources;
+					if (scriptName) {
+						try {
+							execFileSync(
+								"qdbus6",
+								["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", scriptName],
+								{ timeout: 1000, stdio: "ignore" },
+							);
+						} catch {
+							/* Host may already be shutting down. */
+						}
+					}
+					removeAgentDesktopRuntime(this.#desktopResources);
+				},
+				{ exitOnly: true },
+			);
+			return;
+		}
+		if (message.type === "agent-desktop-state") {
+			if (message.closedByUser && message.state === "stopped") {
+				const owner = this.#session.getEvalKernelOwnerId?.();
+				if (owner) desktopClosedNotices.add(owner);
+			}
+			this.#desktopState = message.state;
+			return;
+		}
+		if (message.type === "agent-desktop") {
+			const pending = this.#desktopPending.get(message.id);
+			if (message.ok) {
+				this.#desktopState = message.state;
+				pending?.resolve(message.state);
+			} else pending?.reject(errorFromPayload(message.error));
+			return;
+		}
 		if (message.type === "ready") {
 			this.#startResolve?.();
 			this.#startResolve = undefined;
@@ -535,6 +625,8 @@ export class ComputerSupervisor implements ComputerController {
 	}
 
 	async #terminate(reason: unknown): Promise<void> {
+		for (const pending of this.#desktopPending.values()) pending.reject(reason);
+		this.#desktopPending.clear();
 		const worker = this.#worker;
 		this.#worker = undefined;
 		this.#startPromise = undefined;
@@ -555,6 +647,18 @@ export class ComputerSupervisor implements ComputerController {
 		for (const resolve of this.#revocations.values()) resolve();
 		this.#revocations.clear();
 		await worker?.terminate().catch(() => undefined);
+		const resources = this.#desktopResources;
+		this.#desktopResources = { processes: [] };
+		this.#desktopState = "stopped";
+		await stopAgentDesktopResources(resources);
+		if (!resources.watchdog && resources.scriptName)
+			await promisify(execFile)(
+				"qdbus6",
+				["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", resources.scriptName],
+				{ timeout: 1000 },
+			).catch(() => {});
+		this.#removeDesktopExitHook?.();
+		this.#removeDesktopExitHook = undefined;
 	}
 
 	async close(): Promise<void> {
@@ -588,6 +692,32 @@ export class ComputerSupervisor implements ComputerController {
 const ownedSupervisors = new Map<string, Set<ComputerController>>();
 /** Per owner with agent turns: the turn in flight, or between turns the one that ended last, counted from 1. */
 const ownerTurns = new Map<string, { turn: number; inFlight: boolean }>();
+const desktopClosedNotices = new Set<string>();
+
+export function agentDesktopStateForOwner(ownerId: string): AgentDesktopState {
+	return (
+		[...(ownedSupervisors.get(ownerId) ?? [])].find(controller => controller.agentDesktopState !== "stopped")
+			?.agentDesktopState ?? "stopped"
+	);
+}
+
+export async function controlAgentDesktopForOwner(
+	ownerId: string,
+	command: "start" | "stop" | "toggle",
+): Promise<AgentDesktopState> {
+	const controller = [...(ownedSupervisors.get(ownerId) ?? [])].find(controller => controller.agentDesktop);
+	if (!controller?.agentDesktop)
+		throw new ToolError("Enable the computer prelude with /computer on before using /desk");
+	const wasRunning = controller.agentDesktopState !== "stopped";
+	const state = await controller.agentDesktop(command);
+	if (command === "stop" && wasRunning) desktopClosedNotices.add(ownerId);
+	return state;
+}
+
+/** Consume once, only at the next user-message dispatch; the system/cache prefix stays unchanged. */
+export function takeAgentDesktopClosedNotice(ownerId: string): boolean {
+	return desktopClosedNotices.delete(ownerId);
+}
 
 /** Registers a controller for owner-scoped session cleanup. */
 export function registerComputerController(ownerId: string | undefined, controller: ComputerController): () => void {
@@ -663,6 +793,7 @@ export function resumeComputerUseForOwner(ownerId: string | undefined): void {
 export async function releaseComputerSessionsForOwner(ownerId: string | undefined): Promise<void> {
 	if (!ownerId) return;
 	ownerTurns.delete(ownerId);
+	desktopClosedNotices.delete(ownerId);
 	const controllers = ownedSupervisors.get(ownerId);
 	if (!controllers) return;
 	ownedSupervisors.delete(ownerId);

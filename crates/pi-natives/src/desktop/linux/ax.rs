@@ -11,8 +11,24 @@ use crate::desktop::{
 mod menus;
 
 pub struct AtSpiAx {
-	rt:         Runtime,
-	connection: atspi::AccessibilityConnection,
+	rt:           Runtime,
+	connection:   atspi::AccessibilityConnection,
+	focused_text: std::collections::HashMap<String, ObjectRefOwned>,
+}
+
+pub(crate) enum TextInsertion {
+	Inserted,
+	Unavailable(String),
+}
+
+fn insertion_length(value: &str, toolkit: &str) -> CoreResult<i32> {
+	let length = if toolkit.eq_ignore_ascii_case("Qt") {
+		value.encode_utf16().count()
+	} else {
+		value.len()
+	};
+	i32::try_from(length)
+		.map_err(|_| DesktopError::input_failed("text exceeds AT-SPI insertion limit"))
 }
 
 /// An AT-SPI top-level frame and whether its reported screen position is real.
@@ -38,7 +54,294 @@ impl AtSpiAx {
 		let connection = rt
 			.block_on(atspi::AccessibilityConnection::new())
 			.map_err(|err| DesktopError::ax_failed(format!("AT-SPI connection: {err}")))?;
-		Ok(Self { rt, connection })
+		Ok(Self { rt, connection, focused_text: Default::default() })
+	}
+
+	/// Resolve the accessibility bus on the selected session, not the host bus.
+	pub(crate) fn for_session(session: &zbus::blocking::Connection) -> CoreResult<Self> {
+		let proxy =
+			zbus::blocking::Proxy::new(session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus")
+				.map_err(|error| DesktopError::ax_failed(format!("AT-SPI session bus: {error}")))?;
+		let address: String = proxy
+			.call("GetAddress", &())
+			.map_err(|error| DesktopError::ax_failed(format!("AT-SPI GetAddress: {error}")))?;
+		let rt = Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.map_err(|error| DesktopError::ax_failed(format!("AT-SPI runtime: {error}")))?;
+		let address = address
+			.parse()
+			.map_err(|error| DesktopError::ax_failed(format!("AT-SPI address: {error}")))?;
+		let connection = rt
+			.block_on(atspi::AccessibilityConnection::from_address(address))
+			.map_err(|error| DesktopError::ax_failed(format!("AT-SPI selected session: {error}")))?;
+		Ok(Self { rt, connection, focused_text: Default::default() })
+	}
+
+	pub(crate) fn insert_text(
+		&mut self,
+		window: &DesktopWindow,
+		element: Option<&AxHandle>,
+		value: &str,
+	) -> CoreResult<TextInsertion> {
+		let root = match self.window_root(window) {
+			Ok(root) => root,
+			Err(error) => {
+				return Ok(TextInsertion::Unavailable(format!("window association: {error}")));
+			},
+		};
+		let remembered = self.focused_text.get(&window.id).cloned();
+		self.rt.block_on(async {
+			let connection = self.connection.connection();
+			let object = if let Some(element) = element {
+				Self::object(element).clone()
+			} else if let Some(focused) =
+				Self::focused_editable(connection, Self::object(&root).clone(), 0).await
+			{
+				focused
+			} else if let Some(cached) = remembered.filter(|_| window.id.starts_with("kwin:")) {
+				if Self::valid_cached_text(connection, &cached, Self::object(&root)).await {
+					cached
+				} else {
+					let Some(unique) =
+						Self::unique_editable(connection, Self::object(&root).clone()).await
+					else {
+						return Ok(TextInsertion::Unavailable(
+							"no focused, valid cached, or unique showing editable element".into(),
+						));
+					};
+					unique
+				}
+			} else {
+				let Some(unique) = Self::unique_editable(connection, Self::object(&root).clone()).await
+				else {
+					return Ok(TextInsertion::Unavailable(
+						"no focused or unique showing editable element".into(),
+					));
+				};
+				unique
+			};
+			let accessible = match object.as_accessible_proxy(connection).await {
+				Ok(proxy) => proxy,
+				Err(error) => return Ok(TextInsertion::Unavailable(format!("element proxy: {error}"))),
+			};
+			if !accessible
+				.get_interfaces()
+				.await
+				.is_ok_and(|interfaces| interfaces.contains(atspi::Interface::EditableText))
+			{
+				return Ok(TextInsertion::Unavailable("element does not expose EditableText".into()));
+			}
+			let Some(name) = object.name() else {
+				return Ok(TextInsertion::Unavailable("element has no accessibility bus owner".into()));
+			};
+			let editable = atspi::proxy::editable_text::EditableTextProxy::builder(connection)
+				.destination(name.clone())
+				.map_err(|e| DesktopError::ax_failed(e.to_string()))?
+				.path(object.path().clone())
+				.map_err(|e| DesktopError::ax_failed(e.to_string()))?
+				.cache_properties(atspi::zbus::proxy::CacheProperties::No)
+				.build()
+				.await;
+			let text = atspi::proxy::text::TextProxy::builder(connection)
+				.destination(name.clone())
+				.map_err(|e| DesktopError::ax_failed(e.to_string()))?
+				.path(object.path().clone())
+				.map_err(|e| DesktopError::ax_failed(e.to_string()))?
+				.cache_properties(atspi::zbus::proxy::CacheProperties::No)
+				.build()
+				.await;
+			let (Ok(editable), Ok(text)) = (editable, text) else {
+				return Ok(TextInsertion::Unavailable(
+					"Text/EditableText proxy construction failed".into(),
+				));
+			};
+			let caret = match text.caret_offset().await {
+				Ok(caret) => caret,
+				Err(error) => return Ok(TextInsertion::Unavailable(format!("CaretOffset: {error}"))),
+			};
+			let before_count = match text.character_count().await {
+				Ok(count) => count,
+				Err(error) => {
+					return Ok(TextInsertion::Unavailable(format!("CharacterCount: {error}")));
+				},
+			};
+			let application = accessible
+				.get_application()
+				.await
+				.map_err(|e| DesktopError::ax_failed(format!("AT-SPI application lookup: {e}")))?;
+			let Some(owner) = application.name() else {
+				return Ok(TextInsertion::Unavailable("application has no bus owner".into()));
+			};
+			let app = atspi::zbus::Proxy::new(
+				connection,
+				owner.as_str(),
+				application.path().as_str(),
+				"org.freedesktop.DBus.Properties",
+			)
+			.await
+			.map_err(|e| DesktopError::ax_failed(format!("AT-SPI application proxy: {e}")))?;
+			let toolkit: atspi::zbus::zvariant::OwnedValue = app
+				.call("Get", &("org.a11y.atspi.Application", "ToolkitName"))
+				.await
+				.map_err(|e| DesktopError::ax_failed(format!("AT-SPI ToolkitName: {e}")))?;
+			let toolkit = String::try_from(toolkit)
+				.map_err(|e| DesktopError::ax_failed(format!("AT-SPI ToolkitName value: {e}")))?;
+			// Qt's adaptor resizes QString to this length (UTF-16 units), whereas
+			// ATK consumes a UTF-8 byte length. Never let Qt extend past the text.
+			let length = insertion_length(value, &toolkit)?;
+			crate::desktop::control::check()?;
+			if !editable
+				.insert_text(caret, value, length)
+				.await
+				.map_err(|e| {
+					DesktopError::input_failed(format!(
+						"AT-SPI InsertText outcome unknown; do not retry: {e}"
+					))
+				})? {
+				return Ok(TextInsertion::Unavailable(
+					"EditableText.InsertText explicitly returned false".into(),
+				));
+			}
+			let after_count = text.character_count().await.map_err(|e| {
+				DesktopError::input_failed(format!(
+					"AT-SPI inserted text count unavailable; do not retry: {e}"
+				))
+			})?;
+			let end = after_count
+				.checked_sub(before_count)
+				.and_then(|delta| caret.checked_add(delta))
+				.ok_or_else(|| {
+					DesktopError::input_failed("AT-SPI inserted text count overflow; do not retry")
+				})?;
+			let inserted = text.get_text(caret, end).await.map_err(|e| {
+				DesktopError::input_failed(format!(
+					"AT-SPI inserted text could not be verified; do not retry: {e}"
+				))
+			})?;
+			if inserted != value {
+				return Err(DesktopError::input_failed(
+					"AT-SPI InsertText readback mismatch; do not retry",
+				));
+			}
+			if !text.set_caret_offset(end).await.map_err(|e| {
+				DesktopError::input_failed(format!(
+					"AT-SPI inserted text but could not move caret: {e}"
+				))
+			})? {
+				return Err(DesktopError::input_failed(
+					"AT-SPI inserted text but rejected caret update",
+				));
+			}
+			Ok(TextInsertion::Inserted)
+		})
+	}
+
+	async fn focused_editable(
+		connection: &atspi::zbus::Connection,
+		object: ObjectRefOwned,
+		depth: u8,
+	) -> Option<ObjectRefOwned> {
+		if depth > 40 || object.is_null() {
+			return None;
+		}
+		let proxy = object.as_accessible_proxy(connection).await.ok()?;
+		if proxy.get_state().await.ok()?.contains(State::Focused)
+			&& proxy
+				.get_interfaces()
+				.await
+				.ok()?
+				.contains(atspi::Interface::EditableText)
+		{
+			return Some(object);
+		}
+		for child in proxy.get_children().await.ok()? {
+			if let Some(found) = Box::pin(Self::focused_editable(connection, child, depth + 1)).await {
+				return Some(found);
+			}
+		}
+		None
+	}
+
+	async fn valid_cached_text(
+		connection: &atspi::zbus::Connection,
+		object: &ObjectRefOwned,
+		root: &ObjectRefOwned,
+	) -> bool {
+		let Ok(proxy) = object.as_accessible_proxy(connection).await else {
+			return false;
+		};
+		if !proxy
+			.get_state()
+			.await
+			.is_ok_and(|state| state.contains(State::Showing))
+			|| !proxy
+				.get_interfaces()
+				.await
+				.is_ok_and(|interfaces| interfaces.contains(atspi::Interface::EditableText))
+		{
+			return false;
+		}
+		let mut parent = object.clone();
+		for _ in 0..64 {
+			if &parent == root {
+				return true;
+			}
+			let Ok(proxy) = parent.as_accessible_proxy(connection).await else {
+				return false;
+			};
+			let Ok(next) = proxy.parent().await else {
+				return false;
+			};
+			if next.is_null() || next == parent {
+				return false;
+			}
+			parent = next;
+		}
+		false
+	}
+
+	async fn unique_editable(
+		connection: &atspi::zbus::Connection,
+		root: ObjectRefOwned,
+	) -> Option<ObjectRefOwned> {
+		let mut candidate = None;
+		let mut count = 0;
+		Self::collect_editable(connection, root, 0, &mut candidate, &mut count).await;
+		if count == 1 { candidate } else { None }
+	}
+
+	async fn collect_editable(
+		connection: &atspi::zbus::Connection,
+		object: ObjectRefOwned,
+		depth: u8,
+		candidate: &mut Option<ObjectRefOwned>,
+		count: &mut u8,
+	) {
+		if depth > 40 || *count > 1 || object.is_null() {
+			return;
+		}
+		let Ok(proxy) = object.as_accessible_proxy(connection).await else {
+			return;
+		};
+		if proxy
+			.get_state()
+			.await
+			.is_ok_and(|state| state.contains(State::Showing) && state.contains(State::Editable))
+			&& proxy
+				.get_interfaces()
+				.await
+				.is_ok_and(|interfaces| interfaces.contains(atspi::Interface::EditableText))
+		{
+			*count += 1;
+			*candidate = Some(object.clone());
+		}
+		for child in proxy.get_children().await.unwrap_or_default() {
+			Box::pin(Self::collect_editable(connection, child, depth + 1, candidate, count)).await;
+			if *count > 1 {
+				break;
+			}
+		}
 	}
 
 	const fn object(h: &AxHandle) -> &ObjectRefOwned {
@@ -103,6 +406,7 @@ impl AtSpiAx {
 					let id = atspi_window_id(&frame);
 					windows.push(AtSpiWindow {
 						window: DesktopWindow {
+							minimized: None,
 							id,
 							title,
 							app: app_name.clone(),
@@ -283,6 +587,25 @@ fn atspi_window_id(frame: &ObjectRefOwned) -> String {
 }
 
 fn native_window_for_frame(windows: &[DesktopWindow], pid: u32, title: &str) -> CoreResult<String> {
+	let kwin = windows
+		.iter()
+		.filter(|window| window.id.starts_with("kwin:") && window.pid == Some(pid));
+	let mut candidates = kwin.clone();
+	if let Some(window) = candidates.next()
+		&& candidates.next().is_none()
+	{
+		return Ok(window.id.clone());
+	}
+	if !kwin.clone().any(|window| window.title == title) && !title.is_empty() {
+		let mut partial = kwin.filter(|window| {
+			!window.title.is_empty() && (window.title.contains(title) || title.contains(&window.title))
+		});
+		if let Some(window) = partial.next()
+			&& partial.next().is_none()
+		{
+			return Ok(window.id.clone());
+		}
+	}
 	let mut matches = windows.iter().filter(|window| {
 		!window.id.starts_with("atspi:") && window.pid == Some(pid) && window.title == title
 	});
@@ -335,6 +658,10 @@ impl AxBackend for AtSpiAx {
 		let result = self.rt.block_on(async {
 			let app = Self::app_for_window(&self.connection, win).await?;
 			let frames = Self::frames(&self.connection, &app).await?;
+			if win.id.starts_with("kwin:") && frames.len() == 1 {
+				return Ok(frames[0].clone());
+			}
+			let mut partial = Vec::new();
 			let mut matches = Vec::new();
 			for frame in frames {
 				let id = atspi_window_id(&frame);
@@ -348,9 +675,19 @@ impl AxBackend for AtSpiAx {
 					.as_accessible_proxy(self.connection.connection())
 					.await
 					.map_err(|err| err.to_string())?;
-				if proxy.name().await.map_err(|err| err.to_string())? == win.title {
+				let title = proxy.name().await.map_err(|err| err.to_string())?;
+				if title == win.title {
 					matches.push(frame);
+				} else if win.id.starts_with("kwin:")
+					&& !title.is_empty()
+					&& !win.title.is_empty()
+					&& (title.contains(&win.title) || win.title.contains(&title))
+				{
+					partial.push(frame);
 				}
+			}
+			if matches.is_empty() && partial.len() == 1 {
+				return Ok(partial.remove(0));
 			}
 			if matches.len() == 1 {
 				Ok(matches.remove(0))
@@ -358,9 +695,18 @@ impl AxBackend for AtSpiAx {
 				Err(format!("window '{}' has {} matching AT-SPI frames", win.title, matches.len()))
 			}
 		});
-		result
-			.map(AxHandle::AtSpi)
-			.map_err(|err: String| DesktopError::ax_failed(format!("AT-SPI window root: {err}")))
+		let object = result
+			.map_err(|err: String| DesktopError::ax_failed(format!("AT-SPI window root: {err}")))?;
+		if win.id.starts_with("kwin:")
+			&& win.focused
+			&& let Some(focused) = self.rt.block_on(Self::focused_editable(
+				self.connection.connection(),
+				object.clone(),
+				0,
+			)) {
+			self.focused_text.insert(win.id.clone(), focused);
+		}
+		Ok(AxHandle::AtSpi(object))
 	}
 
 	fn window_id(&mut self, h: &AxHandle, windows: &[DesktopWindow]) -> CoreResult<String> {
@@ -792,23 +1138,36 @@ mod tests {
 	}
 
 	#[test]
+	fn toolkit_text_lengths_preserve_non_bmp_characters() {
+		assert_eq!(insertion_length("中文🙂 mixed text", "Qt").unwrap(), 15);
+		assert_eq!(insertion_length("中文🙂 mixed text", "gtk").unwrap(), 21);
+	}
+	#[test]
 	fn frame_ownership_requires_unique_process_and_title() {
 		let window = |id: &str, pid: u32| DesktopWindow {
-			id:      id.to_owned(),
-			pid:     Some(pid),
-			title:   "Document".into(),
-			app:     "Editor".into(),
-			x:       0,
-			y:       0,
-			width:   100,
-			height:  100,
-			focused: false,
+			minimized: None,
+			id:        id.to_owned(),
+			pid:       Some(pid),
+			title:     "Document".into(),
+			app:       "Editor".into(),
+			x:         0,
+			y:         0,
+			width:     100,
+			height:    100,
+			focused:   false,
 		};
 		let mut windows = vec![window("1", 10), window("2", 20)];
 		assert_eq!(native_window_for_frame(&windows, 20, "Document").unwrap(), "2");
 		assert!(native_window_for_frame(&windows, 30, "Document").is_err());
 		windows.push(window("3", 20));
 		assert!(native_window_for_frame(&windows, 20, "Document").is_err());
+		let mut kwin = vec![window("kwin:first", 20)];
+		assert_eq!(native_window_for_frame(&kwin, 20, "Document — Editor").unwrap(), "kwin:first");
+		kwin.push(window("kwin:second", 20));
+		kwin[1].title = "Other".into();
+		assert_eq!(native_window_for_frame(&kwin, 20, "Document — Editor").unwrap(), "kwin:first");
+		kwin[1].title = "Document".into();
+		assert!(native_window_for_frame(&kwin, 20, "Document — Editor").is_err());
 	}
 
 	#[test]

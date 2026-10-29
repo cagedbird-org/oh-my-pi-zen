@@ -749,10 +749,11 @@ struct Worker {
 impl Worker {
 	fn new(
 		selector: DisplaySelector,
+		options: DesktopSessionOptions,
 		capabilities: Arc<Mutex<Option<DesktopCapabilities>>>,
 		display_awake: Arc<DisplayAwake>,
 	) -> Self {
-		let backend = create_backend(selector);
+		let backend = create_backend(selector, options);
 		Self {
 			backend,
 			registry: AxRegistry::default(),
@@ -864,8 +865,7 @@ impl Worker {
 		let ax = backend
 			.as_mut()
 			.map_err(|error| error.clone())?
-			.ax()
-			.ok_or_else(DesktopError::ax_unsupported)?;
+			.ax_result()?;
 		ax::snapshot(ax, registry, &window, options)
 	}
 
@@ -1267,10 +1267,7 @@ impl Worker {
 	}
 
 	fn ax(&mut self) -> CoreResult<&mut dyn backend::AxBackend> {
-		self
-			.backend()?
-			.ax()
-			.ok_or_else(DesktopError::ax_unsupported)
+		self.backend()?.ax_result()
 	}
 
 	fn process(&mut self, request: &Request, token: &OperationToken) -> CoreResult<Response> {
@@ -1480,8 +1477,7 @@ impl Worker {
 				let ax = backend
 					.as_mut()
 					.map_err(|error| error.clone())?
-					.ax()
-					.ok_or_else(DesktopError::ax_unsupported)?;
+					.ax_result()?;
 				Ok(Response::Nodes(ax::query(ax, registry, &window, query)?))
 			},
 			Request::AxElementAt { target, x, y, .. } => {
@@ -1489,8 +1485,7 @@ impl Worker {
 				let backend = backend
 					.as_mut()
 					.map_err(|error| error.clone())?
-					.ax()
-					.ok_or_else(DesktopError::ax_unsupported)?;
+					.ax_result()?;
 				Ok(Response::Node(ax::element_at_node(backend, registry, target.key(), *x, *y)?))
 			},
 			Request::AxFocused { .. } => {
@@ -1501,8 +1496,7 @@ impl Worker {
 						let ax = backend
 							.as_mut()
 							.map_err(|error| error.clone())?
-							.ax()
-							.ok_or_else(DesktopError::ax_unsupported)?;
+							.ax_result()?;
 						Some(register_node(ax, registry, "desktop", h)?)
 					},
 					None => None,
@@ -1538,8 +1532,7 @@ impl Worker {
 					let ax = backend
 						.as_mut()
 						.map_err(|error| error.clone())?
-						.ax()
-						.ok_or_else(DesktopError::ax_unsupported)?;
+						.ax_result()?;
 					nodes.push(register_node(ax, registry, &target, h)?);
 				}
 				Ok(Response::Nodes(nodes))
@@ -1554,8 +1547,7 @@ impl Worker {
 						let ax = backend
 							.as_mut()
 							.map_err(|error| error.clone())?
-							.ax()
-							.ok_or_else(DesktopError::ax_unsupported)?;
+							.ax_result()?;
 						Some(register_node(ax, registry, &target, h)?)
 					},
 					None => None,
@@ -1673,19 +1665,28 @@ impl Worker {
 }
 
 #[cfg(target_os = "macos")]
-fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
+fn create_backend(
+	selector: DisplaySelector,
+	_options: DesktopSessionOptions,
+) -> CoreResult<Box<dyn Backend>> {
 	Ok(Box::new(macos::MacosBackend::new(selector)?))
 }
 #[cfg(target_os = "windows")]
-fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
+fn create_backend(
+	selector: DisplaySelector,
+	_options: DesktopSessionOptions,
+) -> CoreResult<Box<dyn Backend>> {
 	Ok(Box::new(win32::Win32Backend::new(selector)?))
 }
 #[cfg(target_os = "linux")]
-fn create_backend(selector: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
-	linux::new_backend(selector)
+fn create_backend(
+	selector: DisplaySelector,
+	options: DesktopSessionOptions,
+) -> CoreResult<Box<dyn Backend>> {
+	linux::new_backend(selector, options)
 }
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn create_backend(_: DisplaySelector) -> CoreResult<Box<dyn Backend>> {
+fn create_backend(_: DisplaySelector, _: DesktopSessionOptions) -> CoreResult<Box<dyn Backend>> {
 	Err(DesktopError::capture_failed("desktop backend unavailable on this platform"))
 }
 
@@ -1706,6 +1707,7 @@ struct Lifecycle {
 }
 struct SessionCore {
 	selector:          DisplaySelector,
+	options:           DesktopSessionOptions,
 	lifecycle:         Mutex<Lifecycle>,
 	capabilities:      Arc<Mutex<Option<DesktopCapabilities>>>,
 	display_awake:     Arc<DisplayAwake>,
@@ -1716,17 +1718,25 @@ struct SessionCore {
 	operation_timeout: Duration,
 }
 impl SessionCore {
+	#[cfg(test)]
 	fn new(selector: DisplaySelector, escape_stops: Arc<AtomicU32>) -> Arc<Self> {
-		Self::with_operation_timeout(selector, escape_stops, OPERATION_TIMEOUT)
+		Self::with_operation_timeout(
+			selector,
+			escape_stops,
+			OPERATION_TIMEOUT,
+			DesktopSessionOptions::default(),
+		)
 	}
 
 	fn with_operation_timeout(
 		selector: DisplaySelector,
 		escape_stops: Arc<AtomicU32>,
 		operation_timeout: Duration,
+		options: DesktopSessionOptions,
 	) -> Arc<Self> {
 		Arc::new(Self {
 			selector,
+			options,
 			lifecycle: Mutex::new(Lifecycle {
 				tx:     None,
 				done:   None,
@@ -1752,12 +1762,13 @@ impl SessionCore {
 		let (tx, rx) = flume::unbounded::<QueuedRequest>();
 		let (done_tx, done_rx) = flume::bounded(1);
 		let selector = self.selector.clone();
+		let options = self.options.clone();
 		let caps = Arc::clone(&self.capabilities);
 		let display_awake = Arc::clone(&self.display_awake);
 		let join = thread::Builder::new()
 			.name("omp-desktop-session".into())
 			.spawn(move || {
-				Worker::new(selector, caps, display_awake).serve(&rx, DISPLAY_AWAKE_GRACE);
+				Worker::new(selector, options, caps, display_awake).serve(&rx, DISPLAY_AWAKE_GRACE);
 				let _ = done_tx.send(());
 			})
 			.map_err(|e| {
@@ -1894,7 +1905,21 @@ impl DesktopSession {
 	pub fn new(options: Option<DesktopSessionOptions>) -> Result<Self> {
 		let options = options.unwrap_or_default();
 		let escape_stops = control::escape_stop_counter(options.escape_stop_key.as_deref());
-		Ok(Self { core: SessionCore::new(DisplaySelector::parse(options.display), escape_stops) })
+		let selector = DisplaySelector::parse(options.display.clone());
+		Ok(Self {
+			core: SessionCore::with_operation_timeout(
+				selector,
+				escape_stops,
+				OPERATION_TIMEOUT,
+				options,
+			),
+		})
+	}
+
+	/// Version of the explicit `KWin` session options understood by this addon.
+	#[napi]
+	pub fn kwin_session_options_version() -> u32 {
+		u32::from(cfg!(target_os = "linux"))
 	}
 
 	/// Asks the worker when it is idle, so permissions are read live. While
@@ -2704,69 +2729,72 @@ mod capture_tests {
 	/// Backend that mints a composite AT-SPI window id, mirroring the Wayland
 	/// `AtSpiAx` path. Exists to exercise `Worker::process` without a display.
 	struct FakeWaylandBackend {
-		window:                 DesktopWindow,
-		overlap:                Option<DesktopWindow>,
-		window_present:         bool,
+		window:                  DesktopWindow,
+		overlap:                 Option<DesktopWindow>,
+		window_present:          bool,
+		ax_initialization_error: Option<DesktopError>,
 		/// An AX tree the app can rebuild; `None` answers every element as one
 		/// button.
-		tree:                   Option<Arc<Mutex<FakeTree>>>,
-		clicks:                 Arc<Mutex<Vec<String>>>,
-		modes:                  Arc<Mutex<Vec<DeliveryMode>>>,
-		layout:                 Arc<Mutex<Vec<DesktopDisplay>>>,
-		active_display:         Arc<Mutex<String>>,
-		captures:               Arc<Mutex<u8>>,
-		window_queries:         Arc<Mutex<u32>>,
+		tree:                    Option<Arc<Mutex<FakeTree>>>,
+		clicks:                  Arc<Mutex<Vec<String>>>,
+		modes:                   Arc<Mutex<Vec<DeliveryMode>>>,
+		layout:                  Arc<Mutex<Vec<DesktopDisplay>>>,
+		active_display:          Arc<Mutex<String>>,
+		captures:                Arc<Mutex<u8>>,
+		window_queries:          Arc<Mutex<u32>>,
 		/// `window_queries` as each `element_input` began.
-		queries_at_input:       Arc<Mutex<Vec<u32>>>,
+		queries_at_input:        Arc<Mutex<Vec<u32>>>,
 		/// Elements report no bounds.
-		no_bounds:              bool,
-		cancel_on_capabilities: Arc<Mutex<Option<CancellationSource>>>,
-		snapshot_error:         Arc<Mutex<bool>>,
-		cancel_on_snapshot:     Arc<Mutex<Option<CancellationSource>>>,
+		no_bounds:               bool,
+		cancel_on_capabilities:  Arc<Mutex<Option<CancellationSource>>>,
+		snapshot_error:          Arc<Mutex<bool>>,
+		cancel_on_snapshot:      Arc<Mutex<Option<CancellationSource>>>,
 		/// Cancelled once a key chord has gone out, as a cancel landing in the
 		/// shortcut's reply wait is.
-		cancel_after_chord:     Arc<Mutex<Option<CancellationSource>>>,
-		screen:                 Arc<Mutex<ScreenState>>,
+		cancel_after_chord:      Arc<Mutex<Option<CancellationSource>>>,
+		screen:                  Arc<Mutex<ScreenState>>,
 		/// Display selector each `screen_state` read was narrowed to.
-		screen_displays:        Arc<Mutex<Vec<Option<String>>>>,
+		screen_displays:         Arc<Mutex<Vec<Option<String>>>>,
 		/// Display-awake hold transitions, in order.
-		awake:                  Arc<Mutex<Vec<bool>>>,
+		awake:                   Arc<Mutex<Vec<bool>>>,
 		/// Unlock the session on the next layout read, i.e. after the frame.
-		unlock_on_layout:       Arc<Mutex<bool>>,
+		unlock_on_layout:        Arc<Mutex<bool>>,
 		/// Each window listing signals the sender, then blocks until the
 		/// receiver's sender drops.
-		hang_windows:           Option<(flume::Sender<()>, flume::Receiver<()>)>,
+		hang_windows:            Option<(flume::Sender<()>, flume::Receiver<()>)>,
 		/// Runs as each menu read is served.
-		on_menu_read:           Option<Box<dyn Fn() + Send>>,
+		on_menu_read:            Option<Box<dyn Fn() + Send>>,
 		/// Another process drawing the window, such as an Open panel's.
 		#[cfg(target_os = "macos")]
-		drawn_by:               Option<libc::pid_t>,
+		drawn_by:                Option<libc::pid_t>,
 		/// How many times the app's name was looked up.
 		#[cfg(target_os = "macos")]
-		name_lookups:           Arc<Mutex<u32>>,
+		name_lookups:            Arc<Mutex<u32>>,
 		/// How many times the process drawing a window was looked up.
 		#[cfg(target_os = "macos")]
-		input_lookups:          Arc<Mutex<u32>>,
+		input_lookups:           Arc<Mutex<u32>>,
 		/// Every click lands on a control whose menu would take the keyboard.
-		menu_control:           bool,
+		menu_control:            bool,
 	}
 
 	impl FakeWaylandBackend {
 		fn new() -> Self {
 			Self {
 				window: DesktopWindow {
-					id:      WAYLAND_ID.to_string(),
-					title:   "Obsidian".to_string(),
-					app:     "obsidian".to_string(),
-					pid:     Some(1234),
-					x:       0,
-					y:       0,
-					width:   64,
-					height:  48,
-					focused: true,
+					minimized: None,
+					id:        WAYLAND_ID.to_string(),
+					title:     "Obsidian".to_string(),
+					app:       "obsidian".to_string(),
+					pid:       Some(1234),
+					x:         0,
+					y:         0,
+					width:     64,
+					height:    48,
+					focused:   true,
 				},
 				overlap: None,
 				window_present: true,
+				ax_initialization_error: None,
 				tree: None,
 				menu_control: false,
 				clicks: Arc::new(Mutex::new(Vec::new())),
@@ -3227,6 +3255,13 @@ mod capture_tests {
 		fn ax(&mut self) -> Option<&mut dyn AxBackend> {
 			Some(self)
 		}
+
+		fn ax_result(&mut self) -> CoreResult<&mut dyn AxBackend> {
+			if let Some(error) = &self.ax_initialization_error {
+				return Err(error.clone());
+			}
+			Ok(self)
+		}
 	}
 
 	/// A worker that holds the ownership test lock for its test: input it is
@@ -3256,6 +3291,26 @@ mod capture_tests {
 			_ownership: crate::desktop::control::OWNERSHIP_TEST.lock(),
 			worker:     unlocked_worker(backend),
 		}
+	}
+
+	#[test]
+	fn ax_initialization_error_reaches_worker_requests() {
+		let mut backend = FakeWaylandBackend::new();
+		backend.ax_initialization_error =
+			Some(DesktopError::ax_failed("AT-SPI selected session: connection refused"));
+		let mut worker = worker_with(backend);
+		let snapshot_error = worker
+			.snapshot(&Target::Window(WAYLAND_ID.into()), &AxSnapshotOptions::default())
+			.err()
+			.expect("snapshot must report initialization failure");
+		assert_eq!(snapshot_error.code, error::ErrorCode::AxFailed);
+		assert_eq!(snapshot_error.message, "AT-SPI selected session: connection refused");
+		let direct_error = worker
+			.ax()
+			.err()
+			.expect("direct AX request must report initialization failure");
+		assert_eq!(direct_error.code, snapshot_error.code);
+		assert_eq!(direct_error.message, snapshot_error.message);
 	}
 
 	/// A worker for tests that send it no input. Served ones time their calls,
@@ -3488,6 +3543,7 @@ mod capture_tests {
 			DisplaySelector::Active,
 			Arc::default(),
 			HUNG_CALL_TIMEOUT,
+			DesktopSessionOptions::default(),
 		);
 		let display_awake = Arc::clone(&core.display_awake);
 		let (tx, rx) = flume::unbounded();

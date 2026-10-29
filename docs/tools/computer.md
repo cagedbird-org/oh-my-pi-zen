@@ -15,6 +15,8 @@ User setup, permissions, safety guidance, examples, and platform limitations: [S
 - Live prelude reconciliation: `packages/coding-agent/src/session/agent-session.ts`
 - `/computer` toggle: `packages/coding-agent/src/slash-commands/builtin-modes.ts`
 - Persistent worker: `packages/coding-agent/src/tools/computer/{supervisor,protocol,worker,worker-entry}.ts`
+- Nested KWin lifecycle and `/desk` state: `packages/coding-agent/src/tools/computer/agent-desktop.ts`, `packages/coding-agent/src/slash-commands/builtin-control.ts`
+- Independent process-identity-checked cleanup watchdog: `packages/coding-agent/src/tools/computer/agent-desktop-watchdog.py` (embedded source; requires `python3`)
 - Native implementation: `crates/pi-natives/src/desktop/`
 - Native public types: `packages/natives/native/index.d.ts`
 
@@ -24,6 +26,7 @@ User setup, permissions, safety guidance, examples, and platform limitations: [S
 - The prelude is available only through enabled Eval runtimes; it is not an AgentTool.
 - The worker permits one active run; concurrent direct helpers/runs fail with `Computer worker is busy`. Capability inspection remains available during a run. The active Eval documentation and globals update with the current enabled state.
 - Unlike `browser`, this prelude can operate IDEs, terminals, native applications, browser windows, and system dialogs. It has no browser DOM or web ARIA surface; its accessibility methods use the host OS.
+- On linux-x64 KDE Plasma Wayland, `await computer.agentDesktop()` starts a hidden isolated desktop and returns a cached computer-shaped facade. It uses a private runtime directory, session bus, AT-SPI bus/registry, Wayland display and clipboard. `desk.run` binds `desktop` to that session; `desk.close()` destroys it without closing the host prelude. `/desk` shows/hides it, `/desk start` prestarts hidden, and `/desk stop` destroys it and queues one hidden notice for the next user message. No desk setting or dynamic system-prompt update is involved; see [agent desktop](../computer-use.md#isolated-agent-desktop-kde-plasma-wayland).
 
 ## Settings
 
@@ -64,6 +67,8 @@ await win.click(120, 48, button="right")
 
 Handles are frozen snapshots plus proxy methods. `computer.window(...)` and `computer.focusedWindow()` resolve to a `ComputerWindow` carrying `id`, `app`, `title`, `pid`, `bounds`, and `focused`; `computer.ref(...)`, `win.ref(...)`, `win.find(...)`, `computer.elementAt(...)`, `computer.focusedElement()`, `el.parent()`, and `el.children()` resolve to `ComputerElement` values carrying `ref`, `role`, `nativeRole`, `title`, `description`, `enabled`, `focused`, and `childCount`. Window methods re-resolve through `desktop.window(id)` and element methods through `desktop.ref(ref)` on every call, so a closed window or expired ref fails at the call. Methods are non-enumerable, so displaying or serializing a handle shows its identity fields only.
 
+Agent-desktop handles and requests are pinned to `agentDesktopGeneration`, automatically supplied by both Eval facades. Each native desktop recreation publishes a fresh token. Reopening refreshes the same root facade but does not retarget retained handles/methods; old tokens fail with `已失效` before native lookup or input, including when the new AX tree reuses `e1`. Handles retained inside `desk.run` are guarded too. `desk.close()` carries its expected generation into the serialized worker command: a mismatched generation is already closed and leaves any replacement desktop untouched. User `/desk stop` commands omit that condition.
+
 `computer.run(fnOrCode, { args?, read_only?, timeout? })` runs a multi-step function or JavaScript string in the same session and returns the real structured value. JavaScript functions receive `{ desktop, wait, assert }` — `desktop` has the desktop helpers plus synchronous `capabilities()`, but not `run()` or `close()` — and cannot capture Eval-cell closures; `{ args: [...] }` passes plain data, functions, and regular expressions after the scope object. `args` that is neither an array nor `null`, or a non-empty `args` with a code string, throws before the run starts; `null` passes no arguments. Python `computer.run(code, read_only=..., timeout=...)` accepts a JavaScript string only. Nonempty text printed inside the run prints in the outer Eval cell; screenshots surface as Eval images. `read_only` defaults to `false`; `timeout` defaults to 120 seconds, is capped by a positive `tools.maxTimeout`, then clamped to 1–300 seconds. The host invocation schema rejects unknown fields; the JavaScript facade forwards only recognized run options. `computer.capabilities()` reports the native backend and permission state (`action: "capabilities"`); `computer.close()` ends the persistent desktop session.
 
 Approval: a direct call is `read` when its terminal method is inspection-only (`displays`, `windows`, `window`, `focusedWindow`, `screenshot`, `zoom`, `elementAt`, `focusedElement`, `ref`, `clipboard.read`, `ax`, `find`, `value`, `bounds`, `attributes`, `actions`, `parent`, `children`) and `exec` for input, `raise`, `setValue`, `selectText`, `perform`, `press`, `click`, `focus`, and `clipboard.write`; read calls also run with the worker's read-only guard. `computer.run` is `read` only when `read_only === true`; malformed input, an omitted flag, or `false` is `exec`.
@@ -81,8 +86,11 @@ The same surface is reachable as `computer.*` directly and as `desktop.*` inside
 - `desktop.focusedWindow()` returns a window facade or `null`.
 - `desktop.displays()` returns `DesktopDisplay[]`.
 - `desktop.capabilities()` returns capture/input/AX availability, `backgroundWindowInput` and `takeover` support, permission states, display server, backend, display count, and on macOS `screenLocked`/`displayAsleep`.
+- `agentDesktop` in capabilities is a boolean host-availability flag. KDE Plasma Wayland uses backend `"kwin"`, enumerates minimized windows (`minimized?: boolean`), and captures windows with decorations but no shadows. Minimized captures fail until the window is raised. KWin compositor input needs no portal dialog; window input can use `takeover: true`. Isolated-desktop input/control never grants access to the host focus or pointer.
 
 A window facade exposes immutable `id`, `app`, `title`, optional `pid`, `bounds`, and `focused` fields.
+
+On the isolated agent desktop, application inventory is shared with the OS, but `running`/`pid` are recomputed from that desktop's windows before applying `runningOnly`; host and windowless background applications are not reported as running.
 
 ### Applications and display handles
 

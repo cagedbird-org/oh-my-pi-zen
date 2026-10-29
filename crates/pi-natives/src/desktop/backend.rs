@@ -225,7 +225,7 @@ pub fn locate_element_click<B: Backend + ?Sized>(
 	element: &AxHandle,
 	click: &ClickOptions,
 ) -> CoreResult<(Target, PointerEvent)> {
-	let ax = backend.ax().ok_or_else(DesktopError::ax_unsupported)?;
+	let ax = backend.ax_result()?;
 	let bounds = ax
 		.props(element)?
 		.bounds
@@ -233,7 +233,7 @@ pub fn locate_element_click<B: Backend + ?Sized>(
 	let windows = backend.windows()?;
 	// Desktop refs and parent traversal can leave the snapshot's original
 	// window; only the live element can establish ownership.
-	let ax = backend.ax().ok_or_else(DesktopError::ax_unsupported)?;
+	let ax = backend.ax_result()?;
 	let target = Target::Window(ax.window_id(element, &windows)?);
 	Ok((target, click.at(bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0)))
 }
@@ -350,7 +350,7 @@ pub trait Backend: Send {
 		token: &OperationToken,
 	) -> CoreResult<ElementDelivery> {
 		let windows = self.windows()?;
-		let ax = self.ax().ok_or_else(DesktopError::ax_unsupported)?;
+		let ax = self.ax_result()?;
 		let target = Target::Window(ax.window_id(element, &windows)?);
 		ax.focus(element)?;
 		match input {
@@ -398,6 +398,10 @@ pub trait Backend: Send {
 	}
 	fn raise_window(&mut self, id: &str, token: &OperationToken) -> CoreResult<()>;
 	fn ax(&mut self) -> Option<&mut dyn AxBackend>;
+	/// Accessibility backend or its initialization failure, when available.
+	fn ax_result(&mut self) -> CoreResult<&mut dyn AxBackend> {
+		self.ax().ok_or_else(DesktopError::ax_unsupported)
+	}
 }
 
 pub trait AxBackend {
