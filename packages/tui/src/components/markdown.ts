@@ -1354,6 +1354,30 @@ function inlineHasOpen(tokens: readonly Token[]): boolean {
 	return false;
 }
 
+/** Backslash escapes disappear from inline text before their future math
+ * closers arrive; inspect raw blocks, including headings hiding an opener. */
+function streamingHasOpenMath(source: string): boolean {
+	for (const match of source.matchAll(/\\[([]/g)) {
+		if (mathSpanAt(source, match.index) === undefined) return true;
+	}
+	for (const match of source.matchAll(/\\begin\{([^}\n]*)\}?/g)) {
+		if (!source.includes(`\\end{${match[1]}}`, match.index + match[0].length)) return true;
+	}
+	return false;
+}
+
+/** Only literal delimiters can still pair with a later soft line. Styled
+ * leaves (especially code spans) have already consumed their delimiters. */
+function streamingParagraphHasOpen(tokens: readonly Token[], source?: string): boolean {
+	if (source !== undefined && streamingHasOpenMath(source)) return true;
+	for (const token of tokens) {
+		if (token.type === "html") return true;
+		if (token.type === "text" && /[*_`~[\]$<]/.test(token.text)) return true;
+		if ("tokens" in token && Array.isArray(token.tokens) && streamingParagraphHasOpen(token.tokens)) return true;
+	}
+	return false;
+}
+
 /** Isolated inline lex of a same-line delta. A single-line delta has no block
  * structure, so the isolated inline pass equals the full lex's inline pass
  * (marked's paragraph tokens run the same `inlineTokens` entry point). */
@@ -2267,16 +2291,20 @@ interface StreamingHighlightCache extends RenderSignature {
 	// #renderCodeBodyLines, which reads it synchronously and keeps no reference.
 	lines: string[];
 	stream: HighlightStreamSession;
+	// A colored segment may end in "\n\x1b[39m". The reset belongs at
+	// the next row's start, even when that row arrives in another push.
+	pending: string;
 }
 
 /**
- * Split a highlight-stream push result (newline-terminated lines) into
- * per-line strings, dropping the empty tail produced by the final newline.
+ * Split a highlight-stream push result at complete lines, retaining any ANSI
+ * suffix after the last newline for the next push. Native highlighting emits
+ * a foreground reset after each colored segment, including its newline.
  */
-function splitPushedHighlightLines(pushed: string): string[] {
+function splitPushedHighlightLines(pushed: string): { lines: string[]; pending: string } {
 	const lines = pushed.split("\n");
-	lines.pop();
-	return lines;
+	const pending = lines.pop() ?? "";
+	return { lines, pending };
 }
 
 export class Markdown implements Component {
@@ -2301,6 +2329,8 @@ export class Markdown implements Component {
 	#cachedWidth?: number;
 	#cachedLines?: readonly string[];
 	#transientRenderCache = false;
+	#stablePrefixTail = false;
+	#stablePrefixCodeTail?: Token;
 
 	// Streaming-lex cache: the largest blank-line-bounded prefix of #text whose
 	// block tokens are frozen, plus those tokens. marked has no resumable lexer,
@@ -2329,6 +2359,16 @@ export class Markdown implements Component {
 	// texts extend it, so the published prefix never shrinks when the list
 	// stops being the last block.
 	#streamListSettledText?: string;
+	// Complete lines of a trailing paragraph or open top-level fence. Like
+	// list settlement, this survives a later block starting below those rows.
+	#streamTailSettledText?: string;
+	// Verified immutable blocks between the lex prefix and the streaming tail.
+	// Kept independently so an unfrozen long paragraph is checked only once.
+	#streamTailBridge?: { text: string; tokenCount: number };
+	// Raw math guards advance over complete lines only. A complete line with
+	// an open construct can never settle on its own, even if a later line
+	// closes it, so its blocking verdict survives append-only growth.
+	#streamTailMath?: { start: number; kind: string; scanned: number; blocked: boolean };
 	// The prefix before a rewind that only a closer on the still-growing last
 	// line caused. Once a later text holds no closer line after it, that
 	// prefix is right again, so #lexTokens puts it back.
@@ -2510,16 +2550,29 @@ export class Markdown implements Component {
 	/**
 	 * Width-independent source prefix of the last render that no append can
 	 * change: up to a frozen Markdown block boundary, stopping in front of a
-	 * display-math opener whose block an append could still close, or, while a
-	 * list streams as the last block, up to its newest top-level item. Only
-	 * meaningful while streaming (transient render cache on); grows
-	 * monotonically under append-only `setText`.
+	 * display-math opener whose block an append could still close, or through
+	 * settled items/lines of the last streaming block. Only meaningful while
+	 * streaming (transient render cache on); grows monotonically under
+	 * append-only `setText`.
 	 */
 	getLastRenderStableText(): string {
 		if (!this.#transientRenderCache) return "";
-		const settled = this.#streamSettledText ?? "";
+		let settled = this.#streamSettledText ?? "";
 		const list = this.#streamListSettledText;
-		return list !== undefined && list.length > settled.length ? list : settled;
+		const tail = this.#streamTailSettledText;
+		if (list !== undefined && list.length > settled.length) settled = list;
+		if (tail !== undefined && tail.length > settled.length) settled = tail;
+		return settled;
+	}
+
+	/** The source is a published streaming prefix, not a whole Markdown block.
+	 * Its last code line is complete even when the caller trimmed its newline. */
+	set stablePrefixTail(value: boolean) {
+		if (this.#stablePrefixTail === value) return;
+		this.#stablePrefixTail = value;
+		this.#fastTail = undefined;
+		this.#streamingHighlightCache = undefined;
+		this.invalidate();
 	}
 
 	get transientRenderCache(): boolean {
@@ -2636,6 +2689,7 @@ export class Markdown implements Component {
 			if (tokens !== undefined) {
 				this.#freezeStablePrefix(text, tokens, { preserveExisting: true });
 				this.#checkpointStreamingList(text, tokens);
+				this.#checkpointStreamingTail(text, tokens);
 				return tokens;
 			}
 		}
@@ -2648,7 +2702,10 @@ export class Markdown implements Component {
 				const tokens = [...prefixTokens, ...tailTokens];
 				if (retainPrefix) this.#freezeStablePrefix(text, tokens, { preserveExisting: true });
 				else this.#dropStreamPrefix();
-				if (retainPrefix) this.#checkpointStreamingList(text, tokens);
+				if (retainPrefix) {
+					this.#checkpointStreamingList(text, tokens);
+					this.#checkpointStreamingTail(text, tokens);
+				}
 				return tokens;
 			}
 		}
@@ -2660,6 +2717,7 @@ export class Markdown implements Component {
 		if (canStream && retainPrefix && !hasReferenceDefinitions) {
 			this.#freezeStablePrefix(text, tokens, { preserveExisting: false });
 			this.#checkpointStreamingList(text, tokens);
+			this.#checkpointStreamingTail(text, tokens);
 		} else {
 			this.#dropStreamPrefix();
 		}
@@ -2749,6 +2807,108 @@ export class Markdown implements Component {
 		}
 	}
 
+	#checkpointStreamingTail(text: string, tokens: Token[]): void {
+		let index = tokens.length - 1;
+		while (tokens[index]?.type === "space") index--;
+		const token = tokens[index];
+		if (token?.type !== "paragraph" && token?.type !== "code") return;
+		const lang = "lang" in token ? token.lang : undefined;
+		const prefixEnd = this.#streamPrefixText?.length ?? 0;
+		// A display-math opener in the frozen prefix could still absorb every
+		// block after it. Check the bridge's origin, not the trailing token.
+		if ((this.#streamSettledText?.length ?? 0) !== prefixEnd) return;
+		let start = prefixEnd;
+		let bridgeIndex = this.#streamPrefixTokens?.length ?? 0;
+		const bridge = this.#streamTailBridge;
+		if (
+			bridge !== undefined &&
+			bridge.text.length >= prefixEnd &&
+			bridge.tokenCount <= index &&
+			text.startsWith(bridge.text)
+		) {
+			start = bridge.text.length;
+			bridgeIndex = bridge.tokenCount;
+		}
+		for (let i = bridgeIndex; i < index; i++) {
+			const closed = tokens[i]!;
+			// A setext heading can hide an own-line math opener in its raw source.
+			// Its later closer may absorb this block and every block after it.
+			if (mathBlockMayCloseAt(text, start) || (closed.type !== "code" && streamingHasOpenMath(closed.raw))) return;
+			// A heading or fence can close prose without a blank-line boundary.
+			// Such blocks need not join the lex cache before their rows retire,
+			// but lists/tables and unresolved inline openers must stay volatile.
+			switch (closed.type) {
+				case "paragraph":
+					if (streamingParagraphHasOpen(lexInlineTokens(closed.text), closed.raw)) return;
+					break;
+				case "code":
+					if (!this.#codeTokenHasClosingFence(closed)) return;
+					break;
+				case "heading":
+				case "hr":
+				case "space":
+					break;
+				default:
+					return;
+			}
+			start += closed.raw.length;
+			this.#streamTailBridge = { text: text.slice(0, start), tokenCount: i + 1 };
+		}
+		// Fence bodies are literal: only prose can acquire a late math closer.
+		if (mathBlockMayCloseAt(text, start) || (token.type !== "code" && this.#tailHasOpenMath(token, start))) return;
+		let end = prefixEnd;
+		if (token.type === "paragraph") {
+			let lineStart = Math.max(0, (this.#streamTailSettledText?.length ?? 0) - start);
+			let lineEnd = token.raw.indexOf("\n", lineStart);
+			while (lineEnd >= 0) {
+				const nextEnd = token.raw.indexOf("\n", lineEnd + 1);
+				if (nextEnd < 0) break;
+				const nextLine = token.raw.slice(lineEnd + 1, nextEnd);
+				if (/^ {0,3}(=+|-+)[ \t]*$/.test(nextLine) || matchesAt(DELIMITER_ROW_AT, nextLine, 0)) break;
+				const line = token.raw.slice(lineStart, lineEnd);
+				if (streamingParagraphHasOpen(lexInlineTokens(line))) break;
+				end = start + lineEnd + 1;
+				lineStart = lineEnd + 1;
+				lineEnd = nextEnd;
+			}
+			// A later setext underline can still turn the entire paragraph into
+			// a heading. That unavoidable late rewrite is left to the transcript
+			// container's freeze guard (and /redraw), never a prefix retraction.
+		} else if (lang !== "mermaid" && lang !== "svg" && this.#codeTokenIsOpenFence(token)) {
+			// Final-mode orphan-fence repair can delete a bare opener and turn
+			// its body back into Markdown. Only info-bearing fences are stable.
+			if (typeof lang !== "string" || lang.trim() === "") return;
+			const openingEnd = token.raw.indexOf("\n");
+			const completedEnd = token.raw.lastIndexOf("\n");
+			if (completedEnd > openingEnd) end = start + completedEnd + 1;
+		}
+		if (end > (this.#streamTailSettledText?.length ?? 0)) this.#streamTailSettledText = text.slice(0, end);
+	}
+
+	#tailHasOpenMath(token: Token, start: number): boolean {
+		let state = this.#streamTailMath;
+		if (
+			state === undefined ||
+			state.start !== start ||
+			state.kind !== token.type ||
+			state.scanned > token.raw.length
+		) {
+			state = { start, kind: token.type, scanned: 0, blocked: false };
+			this.#streamTailMath = state;
+		}
+		if (state.blocked) return true;
+		let lineEnd = token.raw.indexOf("\n", state.scanned);
+		while (lineEnd >= 0) {
+			if (streamingHasOpenMath(token.raw.slice(state.scanned, lineEnd))) {
+				state.blocked = true;
+				return true;
+			}
+			state.scanned = lineEnd + 1;
+			lineEnd = token.raw.indexOf("\n", state.scanned);
+		}
+		return false;
+	}
+
 	/**
 	 * Drop the frozen lex prefix and the transient row caches keyed on it. A
 	 * prefix set aside for #restoreRewoundPrefix checks itself against each
@@ -2760,6 +2920,9 @@ export class Markdown implements Component {
 		this.#streamPrefixOpeners = NO_OPENERS;
 		this.#streamSettledText = undefined;
 		this.#streamListSettledText = undefined;
+		this.#streamTailSettledText = undefined;
+		this.#streamTailBridge = undefined;
+		this.#streamTailMath = undefined;
 		this.#streamPrefixLineCache = undefined;
 		this.#tailRowCache = undefined;
 		this.#listItemRowsCache = undefined;
@@ -2866,7 +3029,17 @@ export class Markdown implements Component {
 		const base = skipPrefix > 0 ? (this.#streamPrefixText?.length ?? 0) : 0;
 		const frozen = stableBlockBoundary(text, base, tokens, { startIndex: skipPrefix });
 		if (frozen.count === 0) {
-			if (!opts.preserveExisting) this.#dropStreamPrefix();
+			if (!opts.preserveExisting) {
+				// No blank-line lex boundary does not invalidate settled soft
+				// lines. Keep their independent cursor under append-only growth.
+				const tail = this.#streamTailSettledText;
+				const bridge = this.#streamTailBridge;
+				const math = this.#streamTailMath;
+				this.#dropStreamPrefix();
+				if (tail !== undefined && text.startsWith(tail)) this.#streamTailSettledText = tail;
+				if (bridge !== undefined && text.startsWith(bridge.text)) this.#streamTailBridge = bridge;
+				this.#streamTailMath = math;
+			}
 			return;
 		}
 		let openers = skipPrefix > 0 ? this.#streamPrefixOpeners : NO_OPENERS;
@@ -3072,8 +3245,9 @@ export class Markdown implements Component {
 		// whole-document tab scan/copy (the delta-only replaceTabs inside the
 		// branch is the only tab work a streamed frame pays).
 		const tabbed = this.#text.includes("\t") ? replaceTabs(this.#text) : this.#text;
-		const normalizedText = this.transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed);
-		if (!this.transientRenderCache && normalizedText.length < tabbed.length) {
+		const normalizedText =
+			this.transientRenderCache || this.#stablePrefixTail ? tabbed : repairOrphanClosingFence(tabbed);
+		if (!this.transientRenderCache && !this.#stablePrefixTail && normalizedText.length < tabbed.length) {
 			// repairOrphanClosingFence deleted bytes this frame (orphan fence
 			// removed): the guard-scan memo's checked region is no longer
 			// byte-identical, and a cached false verdict may have been based
@@ -3101,7 +3275,7 @@ export class Markdown implements Component {
 		// theme.heading is used as the representative theme probe — it's required
 		// by MarkdownTheme and is one of the most styling-sensitive entries.
 		let cacheKey: string | undefined;
-		if (!this.transientRenderCache) {
+		if (!this.transientRenderCache && !this.#stablePrefixTail) {
 			cacheKey = this.#renderCacheKey(normalizedText, signature);
 			const cached = renderCache.get(cacheKey);
 			if (cached !== undefined) {
@@ -3125,12 +3299,20 @@ export class Markdown implements Component {
 		const tokens = speculated ? [...lexed.slice(0, -1), speculated] : lexed;
 		let contentLines: string[];
 		this.#activeRenderSignature = signature;
+		let tailIndex = tokens.length - 1;
+		while (tokens[tailIndex]?.type === "space") tailIndex--;
+		const codeTail = tokens[tailIndex];
+		this.#stablePrefixCodeTail =
+			this.#stablePrefixTail && codeTail?.type === "code" && this.#codeTokenIsOpenFence(codeTail)
+				? codeTail
+				: undefined;
 		try {
 			contentLines = this.transientRenderCache
 				? this.#renderStreamingContentLines(tokens, normalizedText, signature, contentWidth)
 				: this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature);
 		} finally {
 			this.#activeRenderSignature = undefined;
+			this.#stablePrefixCodeTail = undefined;
 		}
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
@@ -3549,7 +3731,8 @@ export class Markdown implements Component {
 			bodyLines.push(renderedLine(literalCode ? linked : codeIndent + linked, literalCode));
 		};
 
-		const streaming = this.transientRenderCache && !this.#renderingStablePrefix;
+		const stableTail = token === this.#stablePrefixCodeTail;
+		const streaming = stableTail || (this.transientRenderCache && !this.#renderingStablePrefix);
 		if (this.#theme.highlightCode && (!streaming || this.#codeTokenHasClosingFence(token))) {
 			// Finalized content — or a fence that closed mid-stream, which
 			// highlights through the same whole-block call the finalized render
@@ -3562,17 +3745,18 @@ export class Markdown implements Component {
 		}
 
 		if (streaming && this.#theme.highlightCode) {
-			// Open fence: highlight completed lines incrementally so semantic
-			// colors reach completed rows immediately; only the trailing partial
-			// line stays unhighlighted.
-			const lineEnd = tokenText.lastIndexOf("\n");
+			// Open fence: highlight completed lines incrementally. A published
+			// prefix contains only completed lines, including its trimmed last one.
+			const lineEnd = stableTail ? tokenText.length : tokenText.lastIndexOf("\n");
 			const completedLines = lineEnd >= 0 ? this.#highlightStreamingLines(tokenText, lineEnd, lang) : null;
 			if (completedLines) {
 				for (const hlLine of completedLines) {
 					addBodyLine(hlLine);
 				}
-				for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
-					addBodyLine(this.#theme.codeBlock(codeLine));
+				if (!stableTail) {
+					for (const codeLine of tokenText.slice(lineEnd + 1).split("\n")) {
+						addBodyLine(this.#theme.codeBlock(codeLine));
+					}
 				}
 				return bodyLines;
 			}
@@ -3582,6 +3766,10 @@ export class Markdown implements Component {
 			addBodyLine(this.#theme.codeBlock(codeLine));
 		}
 		return bodyLines;
+	}
+
+	#codeTokenIsOpenFence(token: Token): boolean {
+		return /^ {0,3}(?:`{3,}|~{3,})[^\n]*\n/.test(token.raw) && !this.#codeTokenHasClosingFence(token);
 	}
 
 	#codeTokenHasClosingFence(token: Token): boolean {
@@ -3659,8 +3847,10 @@ export class Markdown implements Component {
 			// `completed + "\n"` — every fed line stays newline-terminated. The
 			// signature gates above matched, so advancing the cache in place is
 			// equivalent to rebuilding it, minus the whole-array copy per frame.
-			const pushed = cache.stream.push(`${tokenText.slice(cachedEnd + 1, completedEnd)}\n`);
-			appendLines(cache.lines, splitPushedHighlightLines(pushed));
+			const pushed = cache.pending + cache.stream.push(`${tokenText.slice(cachedEnd + 1, completedEnd)}\n`);
+			const split = splitPushedHighlightLines(pushed);
+			appendLines(cache.lines, split.lines);
+			cache.pending = split.pending;
 			cache.text = tokenText.slice(0, completedEnd);
 			return cache.lines;
 		}
@@ -3668,9 +3858,9 @@ export class Markdown implements Component {
 		const completedText = tokenText.slice(0, completedEnd);
 		const stream = this.#createHighlightStream(lang);
 		if (!stream) return null;
-		const lines = splitPushedHighlightLines(stream.push(`${completedText}\n`));
+		const { lines, pending } = splitPushedHighlightLines(stream.push(`${completedText}\n`));
 		if (signature) {
-			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream };
+			this.#streamingHighlightCache = { ...signature, lang, text: completedText, lines, stream, pending };
 		}
 		return lines;
 	}
@@ -3939,7 +4129,7 @@ export class Markdown implements Component {
 				for (const bodyLine of this.#renderCodeBodyLines(token, codeIndent)) {
 					lines.push(bodyLine);
 				}
-				lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
+				if (token !== this.#stablePrefixCodeTail) lines.push(renderedLine(this.#theme.codeBlockBorder("```")));
 				if (nextTokenType && nextTokenType !== "space") {
 					lines.push(renderedLine("")); // Add spacing after code blocks (unless space token follows)
 				}
