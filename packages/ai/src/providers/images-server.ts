@@ -15,6 +15,8 @@ const imageJsonRequestSchema = type({
 	"input_references?": "unknown",
 	"images?": "unknown",
 	"image?": "unknown",
+	"background?": '"transparent" | "opaque" | "auto"',
+	"quality?": '"low" | "medium" | "high"',
 });
 
 export type ImageRequestKind = "generations" | "edits";
@@ -26,7 +28,7 @@ export interface ImagesParsedRequest {
 
 export interface ImagesResponseBody {
 	created: number;
-	data: Array<{ b64_json: string; revised_prompt?: string }>;
+	data: Array<{ b64_json: string; revised_prompt?: string; size?: string; quality?: string }>;
 	usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost: number };
 }
 
@@ -51,6 +53,7 @@ function decodeInputReference(value: unknown): { data: string; mimeType: string 
 	if (value !== null && typeof value === "object") {
 		raw = "url" in value ? value.url : undefined;
 		const imageUrl = "image_url" in value ? value.image_url : undefined;
+		if (raw === undefined && typeof imageUrl === "string") raw = imageUrl;
 		if (raw === undefined && imageUrl !== null && typeof imageUrl === "object" && "url" in imageUrl) {
 			raw = imageUrl.url;
 		}
@@ -90,6 +93,8 @@ function parseJson(body: unknown, kind: ImageRequestKind): ImagesParsedRequest {
 			...(aspectRatio ? { aspectRatio } : {}),
 			...(imageSize ? { imageSize } : {}),
 			...(count ? { count } : {}),
+			...(parsed.background ? { background: parsed.background } : {}),
+			...(parsed.quality ? { quality: parsed.quality } : {}),
 		},
 	};
 }
@@ -121,6 +126,10 @@ async function parseMultipart(form: FormData): Promise<ImagesParsedRequest> {
 	}
 	const size = form.get("size");
 	if (size !== null && typeof size !== "string") validation("size must be a string");
+	const background = form.get("background");
+	if (background !== null && background !== "transparent" && background !== "opaque" && background !== "auto") validation("invalid background");
+	const quality = form.get("quality");
+	if (quality !== null && quality !== "low" && quality !== "medium" && quality !== "high") validation("invalid quality");
 	return {
 		modelId: model,
 		request: {
@@ -128,6 +137,8 @@ async function parseMultipart(form: FormData): Promise<ImagesParsedRequest> {
 			inputImages,
 			...(size ? { imageSize: size } : {}),
 			...(count ? { count } : {}),
+			...(background ? { background } : {}),
+			...(quality ? { quality } : {}),
 		},
 	};
 }
@@ -143,7 +154,7 @@ export async function parseRequest(body: unknown | FormData, kind: ImageRequestK
 export function encodeResponse(result: ImageGenerationResult, _requestedModelId: string): ImagesResponseBody {
 	return {
 		created: Math.floor(Date.now() / 1000),
-		data: result.images.map(image => ({ b64_json: image.data })),
+		data: result.images.map(image => ({ b64_json: image.data, ...(image.size ? { size: image.size } : {}), ...(image.quality ? { quality: image.quality } : {}) })),
 		usage: {
 			prompt_tokens: result.usage.input,
 			completion_tokens: result.usage.output,

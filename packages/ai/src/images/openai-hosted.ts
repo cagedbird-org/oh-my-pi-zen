@@ -1,3 +1,4 @@
+import { imageGenerationPolicy } from "@oh-my-pi/pi-catalog/compat/image-generation";
 import { type Api, type Model, modelKind } from "@oh-my-pi/pi-catalog/types";
 import {
 	applyCodexResidencyHeader,
@@ -7,7 +8,7 @@ import {
 	OPENAI_HEADERS,
 	URL_PATHS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { prompt, readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { parseImageMetadata, prompt, readSseJson, USER_AGENT } from "@oh-my-pi/pi-utils";
 import { withAuth } from "../auth-retry";
 import * as AIError from "../error";
 import { applySessionHeader } from "../providers/inference-headers";
@@ -21,11 +22,10 @@ import {
 	usageFromWire,
 } from "./shared";
 import codexFormatDirective from "./codex-format-directive.md" with { type: "text" };
+import imageSystemInstruction from "./image-system-instruction.md" with { type: "text" };
 import type { GeneratedImage, ImageGenerationOptions, ImageGenerationRequest, ImageGenerationResult } from "./types";
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-const IMAGE_SYSTEM_INSTRUCTION =
-	"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.";
 
 interface HostedOutput {
 	type: "image_generation_call" | "message";
@@ -97,10 +97,11 @@ function collectResponse(response: HostedResponse): ImageGenerationResult {
 	const texts: string[] = [];
 	for (const output of response.output ?? []) {
 		if (output.type === "image_generation_call" && output.result) {
+			const metadata = parseImageMetadata(Buffer.from(output.result.slice(0, 128), "base64"));
 			images.push({
 				data: output.result,
 				mimeType: sniffBase64ImageMimeType(output.result) ?? "image/webp",
-				...(output.size ? { size: output.size } : {}),
+				...(metadata?.width && metadata.height ? { size: `${metadata.width}x${metadata.height}` } : output.size ? { size: output.size } : {}),
 				...(output.quality ? { quality: output.quality } : {}),
 			});
 		}
@@ -176,7 +177,7 @@ export async function generateHostedImage(
 		throw new AIError.ValidationError(`Hosted image carrier API ${carrier.api} is unsupported`);
 	}
 	const stream = carrier.api === "openai-codex-responses";
-	const inputText = stream ? withCodexFormatDirective(request) : request.prompt;
+	const inputText = imageGenerationPolicy(carrier).promptShape ? withCodexFormatDirective(request) : request.prompt;
 	const content: Array<Record<string, unknown>> = [{ type: "input_text", text: inputText }];
 	for (const image of request.inputImages ?? []) {
 		content.push({ type: "input_image", detail: "auto", image_url: toDataUrl(image) });
@@ -185,7 +186,9 @@ export async function generateHostedImage(
 	const tool = {
 		type: "image_generation",
 		action: content.length > 1 ? "edit" : "generate",
-		output_format: "webp",
+		output_format: "png",
+		background: request.background ?? "auto",
+		quality: request.quality ?? "high",
 		...(size ? { size } : {}),
 		// A chat model generating on its own lets the host pick the image model.
 		...(model.api === "openai-responses" && modelKind(model) === "image"
@@ -198,7 +201,7 @@ export async function generateHostedImage(
 		tools: [tool],
 		tool_choice: { type: "image_generation" },
 		store: false,
-		...(stream ? { instructions: IMAGE_SYSTEM_INSTRUCTION, stream: true } : {}),
+		...(stream ? { instructions: prompt.render(imageSystemInstruction), stream: true } : {}),
 	};
 	const fetchImpl = options.fetch ?? fetch;
 	return withAuth(

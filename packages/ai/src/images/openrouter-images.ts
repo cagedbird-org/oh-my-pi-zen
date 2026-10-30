@@ -15,7 +15,6 @@ export async function generateOpenRouterImage(
 	const body = {
 		model: model.requestModelId ?? model.id,
 		prompt: request.prompt,
-		n: request.count ?? 1,
 		response_format: "b64_json",
 		...(request.aspectRatio ? { aspect_ratio: request.aspectRatio } : {}),
 		...(request.imageSize ? { image_size: request.imageSize } : {}),

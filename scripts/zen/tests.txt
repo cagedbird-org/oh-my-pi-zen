@@ -24,3 +24,11 @@ packages/ai/test/error-id.test.ts
 packages/coding-agent/test/turn-recovery-replay-unsafe.test.ts
 packages/coding-agent/test/task/task-arguments.test.ts
 packages/coding-agent/test/archive-grep.test.ts
+packages/coding-agent/test/tools/web-search-anysearch.test.ts
+packages/ai/test/anysearch-login.test.ts
+packages/tui/test/web-search-render.test.ts
+packages/tui/test/tools-native-web.test.ts
+packages/coding-agent/test/tools/image-gen.test.ts
+packages/ai/test/openai-images.test.ts
+packages/ai/test/auth-gateway-images.test.ts
+packages/catalog/test/image-generation-policy.test.ts

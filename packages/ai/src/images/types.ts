@@ -12,6 +12,8 @@ export interface ImageGenerationRequest {
 	aspectRatio?: string;
 	imageSize?: string;
 	count?: number;
+	background?: "transparent" | "opaque" | "auto";
+	quality?: "low" | "medium" | "high";
 }
 
 export interface GeneratedImage {

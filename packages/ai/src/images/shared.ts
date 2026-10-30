@@ -145,7 +145,8 @@ async function imageFromUrl(url: string, fetch: FetchImpl, signal?: AbortSignal)
 		});
 	}
 	const bytes = new Uint8Array(await response.arrayBuffer());
-	return { data: bytes.toBase64(), mimeType };
+	const metadata = parseImageMetadata(bytes);
+	return { data: bytes.toBase64(), mimeType, ...(metadata?.width && metadata.height ? { size: `${metadata.width}x${metadata.height}` } : {}) };
 }
 
 export async function decodeImageResponse(
@@ -156,22 +157,30 @@ export async function decodeImageResponse(
 	if (value === null || typeof value !== "object") {
 		throw new AIError.ProviderResponseError("Image API returned a malformed response", { kind: "envelope" });
 	}
-	const root = value as { data?: unknown; usage?: unknown };
+	const root = value as { data?: unknown; usage?: unknown; size?: unknown; quality?: unknown };
 	if (!Array.isArray(root.data)) {
 		throw new AIError.ProviderResponseError("Image API response is missing data", { kind: "envelope" });
 	}
 	const images: GeneratedImage[] = [];
 	for (const item of root.data) {
 		if (item === null || typeof item !== "object") continue;
-		const image = item as { b64_json?: unknown; url?: unknown; media_type?: unknown };
+		const image = item as { b64_json?: unknown; url?: unknown; media_type?: unknown; size?: unknown; quality?: unknown };
 		if (typeof image.b64_json === "string" && image.b64_json.length > 0) {
 			const mimeType =
 				typeof image.media_type === "string"
 					? image.media_type
 					: (sniffBase64ImageMimeType(image.b64_json) ?? "image/png");
-			images.push({ data: image.b64_json, mimeType });
+			const metadata = parseImageMetadata(Buffer.from(image.b64_json.slice(0, 128), "base64"));
+			const reportedSize = image.size ?? root.size;
+			const quality = image.quality ?? root.quality;
+			images.push({ data: image.b64_json, mimeType,
+				...(metadata?.width && metadata.height ? { size: `${metadata.width}x${metadata.height}` } : typeof reportedSize === "string" ? { size: reportedSize } : {}),
+				...(typeof quality === "string" ? { quality } : {}),
+			});
 		} else if (typeof image.url === "string" && image.url.length > 0) {
-			images.push(await imageFromUrl(image.url, fetch, signal));
+			const downloaded = await imageFromUrl(image.url, fetch, signal);
+			const quality = image.quality ?? root.quality;
+			images.push({ ...downloaded, ...(typeof quality === "string" ? { quality } : {}) });
 		}
 	}
 	return { images, usage: usageFromWire(root.usage) };

@@ -70,7 +70,7 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 		name: "Image generation",
 		color: "accent",
 		section: "kind",
-		accepts: model => modelKind(model) === "image",
+		accepts: model => modelKind(model) === "image" || (modelKind(model) === "chat" && model.hostedImage === true),
 	},
 	web: { tag: "WEB", name: "Web search", color: "success", section: "kind", accepts: acceptsWeb },
 	speech: {

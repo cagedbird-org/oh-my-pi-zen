@@ -38,13 +38,15 @@ describe("OpenAI-compatible image response_format", () => {
 		const fetch: FetchImpl = async (_input, init) => {
 			const requestBody: Record<string, unknown> = JSON.parse(String(init?.body));
 			body = requestBody;
-			return imageResponse("response_format" in requestBody ? 400 : 200);
+			const valid = !("response_format" in requestBody) && requestBody.background === "transparent" && requestBody.output_format === "png" && requestBody.quality === "high";
+			return imageResponse(valid ? 200 : 400);
 		};
 
-		const result = await generateOpenAIImage(model, { prompt: "a cat" }, { apiKey: "test", fetch });
+		const result = await generateOpenAIImage(model, { prompt: "a cat", background: "transparent" }, { apiKey: "test", fetch });
 
 		expect(body?.model).toBe("gpt-image-2.5-2026-08-01");
 		expect(body).not.toHaveProperty("response_format");
+		expect(body).toMatchObject({ background: "transparent", quality: "high", output_format: "png" });
 		expect(result.images[0]?.data).toBe(IMAGE_DATA);
 	});
 
@@ -63,7 +65,7 @@ describe("OpenAI-compatible image response_format", () => {
 			{ apiKey: "test", fetch },
 		);
 
-		expect(body?.input_references).toEqual([{ type: "image_url", url: `data:image/png;base64,${IMAGE_DATA}` }]);
+		expect(body?.images).toEqual([{ image_url: `data:image/png;base64,${IMAGE_DATA}` }]);
 		expect(body).not.toHaveProperty("response_format");
 		expect(result.images[0]?.data).toBe(IMAGE_DATA);
 	});
@@ -118,17 +120,51 @@ describe("OpenAI-compatible image response_format", () => {
 		expect(body?.resolution).toBe("1k");
 	});
 
-	test("DALL-E multipart edits retain response_format", async () => {
+	test("DALL-E multipart edits omit unsupported rendering fields", async () => {
 		const model = imageModel("openai", "dall-e-2");
 		let form: FormData | undefined;
 		const fetch: FetchImpl = async (_input, init) => {
 			if (!(init?.body instanceof FormData)) throw new Error("Expected multipart image edit");
 			form = init.body;
-			return imageResponse();
+			const allowed: Record<string, true> = { model: true, prompt: true, response_format: true, size: true, image: true };
+			const valid = [...form.keys()].every(key => Object.hasOwn(allowed, key));
+			return imageResponse(valid ? 200 : 400);
 		};
 
-		await generateOpenAIImage(model, { prompt: "paint", inputImages: [INPUT_IMAGE] }, { apiKey: "test", fetch });
+		await generateOpenAIImage(model, { prompt: "paint", inputImages: [INPUT_IMAGE], quality: "high", background: "opaque" }, { apiKey: "test", fetch });
 
 		expect(form?.get("response_format")).toBe("b64_json");
+		expect(form?.has("quality")).toBe(false);
+		expect(form?.has("background")).toBe(false);
+		expect(form?.has("output_format")).toBe(false);
 	});
+	for (const id of ["dall-e-2", "dall-e-3"]) {
+		test(`${id} generation defaults omit unsupported rendering fields`, async () => {
+			const model = imageModel("gateway", id);
+			let body: Record<string, unknown> | undefined;
+			const fetch: FetchImpl = async (_input, init) => {
+				body = JSON.parse(String(init?.body));
+				const allowed: Record<string, true> = { model: true, prompt: true, response_format: true, size: true };
+				return imageResponse(Object.keys(body!).every(key => Object.hasOwn(allowed, key)) ? 200 : 400);
+			};
+			await generateOpenAIImage(model, { prompt: "a cat" }, { apiKey: "test", fetch });
+			expect(body).not.toHaveProperty("background");
+			expect(body).not.toHaveProperty("output_format");
+			expect(body).not.toHaveProperty("quality");
+		});
+	}
+	for (const provider of ["gateway", "openai"]) {
+		for (const [quality, expected] of [["low", "standard"], ["medium", "standard"], ["high", "hd"]] as const) {
+			test(`${provider} DALL-E 3 maps ${quality} quality to ${expected}`, async () => {
+				const model = imageModel(provider, "dall-e-3");
+				let body: Record<string, unknown> | undefined;
+				const fetch: FetchImpl = async (_input, init) => {
+					body = JSON.parse(String(init?.body));
+					return imageResponse(body?.quality === expected && !("background" in body!) && !("output_format" in body!) ? 200 : 400);
+				};
+				await generateOpenAIImage(model, { prompt: "a cat", quality, background: "opaque" }, { apiKey: "test", fetch });
+				expect(body?.quality).toBe(expected);
+			});
+		}
+	}
 });

@@ -104,7 +104,7 @@ describe("auth gateway images", () => {
 			return new Response(
 				JSON.stringify({
 					created: 1,
-					data: [{ b64_json: IMAGE_DATA }],
+					data: [{ b64_json: IMAGE_DATA, size: "17x23", quality: "medium" }],
 					usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
 				}),
 				{ headers: { "content-type": "application/json" } },
@@ -117,6 +117,8 @@ describe("auth gateway images", () => {
 				n: 2,
 				size: "1536x1024",
 				response_format: "b64_json",
+				background: "transparent",
+				quality: "low",
 			});
 			expect(response.status).toBe(200);
 			expect(upstream).toEqual({
@@ -125,16 +127,21 @@ describe("auth gateway images", () => {
 				body: {
 					model: "gpt-image-test",
 					prompt: "paint a lighthouse",
-					n: 2,
+					background: "transparent",
+					quality: "low",
+					output_format: "png",
 					size: "1536x1024",
 				},
 			});
 			const body = (await response.json()) as {
-				data: Array<{ b64_json: string }>;
+				data: Array<{ b64_json: string; size?: string; quality?: string }>;
 				usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost: number };
 			};
-			expect(body.data).toEqual([{ b64_json: IMAGE_DATA }]);
-			expect(body.usage).toMatchObject({ prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 });
+			expect(body.data).toEqual([
+				{ b64_json: IMAGE_DATA, size: "17x23", quality: "medium" },
+				{ b64_json: IMAGE_DATA, size: "17x23", quality: "medium" },
+			]);
+			expect(body.usage).toMatchObject({ prompt_tokens: 22, completion_tokens: 14, total_tokens: 36 });
 		});
 	});
 
@@ -231,7 +238,6 @@ describe("auth gateway images", () => {
 				body: {
 					model: "router-image-test",
 					prompt: "paint a forest",
-					n: 1,
 					response_format: "b64_json",
 					aspect_ratio: "16:9",
 					image_size: "1536x1024",

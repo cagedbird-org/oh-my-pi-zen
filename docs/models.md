@@ -205,6 +205,58 @@ providers:
 
 A configured `kind`, explicit or implied by a runner API, outranks the bundled catalog's classification of the same id and survives `modelOverrides` and refreshes.
 
+### Image generation and editing
+
+Declare image models under the provider that already holds their credentials. Set
+`api: openai-images` on the image model, not on the provider, so existing chat models
+keep their transport. The registry inherits the provider's `apiKey`, `baseUrl` and
+`headers`; keys can use the same environment or command resolution as chat models.
+
+```yaml
+# ~/.omp/agent/models.yml
+providers:
+   my-gateway:
+      baseUrl: https://api.example.com/v1
+      apiKey: MY_GATEWAY_API_KEY
+      headers:
+         X-Team: artwork
+      models:
+         - id: gpt-image-2
+           api: openai-images
+```
+
+Select the image role in config.yml. Its ordered fallback chain may mix a logged-in
+Codex OAuth provider (Responses image tool) with an Images API gateway:
+
+```yaml
+modelRoles:
+   image: openai-codex/gpt-image-2
+retry:
+   fallbackChains:
+      image: [my-gateway/gpt-image-2]
+```
+
+`generate_image` accepts a natural-language `prompt`, local reference paths in
+`input: [{path: ./reference.png}]`, `background` (`transparent`, `opaque`, `auto`),
+`count` (1–4), `size` (`square`, `landscape`, `portrait`, or `WIDTHxHEIGHT`), and
+`quality` (`low`, `medium`, `high`, default `high`). It does not accept a model or
+output directory. Images are written to unique files in the system temporary
+directory. Actual dimensions are read from image bytes; quality comes from the
+server's response and is labeled unreported when absent. Earlier chain failures
+are included in successful fallback results.
+
+Transparent generation and editing request PNG with `background: transparent`.
+Images API edits use JSON `images: [{image_url: dataUrl}]` by default; catalog KDL
+declares transports needing multipart. Each requested image is a separate parallel
+single-image call (no `n` field). Credentials and headers are resolved separately
+for each chain candidate and never copied to another provider.
+Rendering controls are model-specific catalog policy: GPT Image accepts background,
+PNG output and low/medium/high quality. DALL·E 2 omits unsupported rendering fields
+and uses its implicit standard quality; DALL·E 3 maps low/medium to standard and
+high to hd. A transparent request skips models without background support with an
+explicit failure reason, allowing the next image-role candidate to run.
+
+
 Loading models.yml checks a `modelOverrides` `kind` only against an api the file names: the override's own `api`, or that of a `models` entry with the same id. A built-in or discovered model gets its api later, so its override `kind` is checked against that api when the override applies; a kind the api does not serve is ignored and logged. An `api` override without `kind` takes a runner API's kind, keeps a kind the new api still serves, and otherwise makes the model `chat`. A `models` entry that redefines a built-in id on a different api follows the same rule, so redefining an image row on `openai-completions` makes it `chat`.
 
 ### Allowed auth/discovery values

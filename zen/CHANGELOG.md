@@ -6,6 +6,10 @@
 
 - Eval 的 `archive` 新增 `grep()`：流式搜索会话正文，支持项目、时间范围、正则和子代理过滤，并返回命中前后的对话轮次，JS 和 Python 均可用。
   Eval `archive` gains `grep()`: stream-search transcript bodies with project, time-range, regex, and subagent filters, returning surrounding conversation turns in both JavaScript and Python.
+- AnySearch 并入内置 `web_search` 及其回退链，通过 `/login anysearch` 保存 key；未登录也能搜索，但会提示用户和模型登录，以免被限流。
+  AnySearch joins built-in `web_search` and its fallback chain with `/login anysearch`; anonymous searches still work but warn the user and model to log in to avoid rate limits.
+- 重写内置 `generate_image`：单个自然语言提示词，支持透明背景、1–4 张并行、尺寸和质量（默认 high）；模型由 `image` 角色回退链决定，可在 `models.yml` 用 `api: openai-images` 声明中转站图片模型并与 Codex 登录混用；如实返回实际尺寸和质量，输出到不覆盖的临时文件。
+  Rewrite built-in `generate_image`: one natural-language prompt with transparent backgrounds, 1–4 parallel images, size, and quality (default high); the `image` role fallback chain picks the model, relay image models can be declared in `models.yml` with `api: openai-images` and mixed with Codex login; actual size and quality are reported, and output goes to non-overwriting temporary files.
 
 ### Fixed
 

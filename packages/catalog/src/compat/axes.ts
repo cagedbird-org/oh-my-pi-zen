@@ -476,6 +476,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	 */
 	"selector-revision-suffix": { key: "selectorRevisionSuffix", set: "catalog", shape: "scalar" },
 	"hosted-image": { key: "hostedImage", set: "catalog", shape: "scalar", values: [true, false] },
+	"image-generation": { key: "imageGeneration", set: "catalog", shape: "object" },
 	/** How the model line bills an input image; shape and formulas in `./image-tokenization`. */
 	"image-tokenization": { key: "imageTokenization", set: "catalog", shape: "object" },
 	/**

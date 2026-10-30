@@ -1,0 +1,83 @@
+// Images API relays accept JSON edits by default. Rendering controls are opt-in.
+on-api "openai-images" {
+	image-generation { edit-encoding "json"; response-format #true; }
+	models "dall-e-2" {
+		// Standard quality is implicit; this endpoint accepts no quality control.
+		image-generation { edit-encoding "json"; supports-background #false; supports-quality #false; }
+	}
+	models "dall-e-3" {
+		image-generation {
+			edit-encoding "json"
+			supports-background #false
+			supports-quality #true
+			quality-low "standard"
+			quality-medium "standard"
+			quality-high "hd"
+		}
+	}
+}
+class "openai" {
+	on-api "openai-images" {
+		family "gpt-image" {
+			image-generation {
+				response-format #false
+				edit-encoding "json"
+				supports-background #true
+				output-format "png"
+				supports-quality #true
+				quality-low "low"
+				quality-medium "medium"
+				quality-high "high"
+				default-quality "high"
+			}
+		}
+	}
+	on "openai" {
+		on-api "openai-images" {
+			family "gpt-image" {
+				image-generation {
+					response-format #false
+					edit-encoding "multipart"
+					supports-background #true
+					output-format "png"
+					supports-quality #true
+					quality-low "low"
+					quality-medium "medium"
+					quality-high "high"
+					default-quality "high"
+				}
+			}
+		}
+	}
+}
+provider "openai" {
+	on-api "openai-images" {
+		image-generation { edit-encoding "multipart"; }
+		models "dall-e-2" {
+			image-generation { edit-encoding "multipart"; supports-background #false; supports-quality #false; }
+		}
+		models "dall-e-3" {
+			image-generation {
+				edit-encoding "multipart"
+				supports-background #false
+				supports-quality #true
+				quality-low "standard"
+				quality-medium "standard"
+				quality-high "hd"
+			}
+		}
+	}
+}
+provider "xai" {
+	on-api "openai-images" {
+		image-generation { edit-encoding "xai"; geometry "resolution"; max-references 3; }
+	}
+}
+provider "xai-oauth" {
+	on-api "openai-images" {
+		image-generation { edit-encoding "xai"; geometry "resolution"; max-references 3; }
+	}
+}
+on-api "openai-codex-responses" {
+	image-generation { prompt-shape #true; }
+}

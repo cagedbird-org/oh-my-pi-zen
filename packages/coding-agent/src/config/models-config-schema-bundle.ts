@@ -126,7 +126,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 	// a models.yml entry can name serves it.
 	const ModelApiSchema = ApiSchema.or(
 		type.enumerated(...Object.keys(RUNNER_API_KINDS).filter(api => api !== "web-search")),
-	);
+	).describe("Model transport; use openai-images on image entries to inherit the provider credentials, baseUrl and headers");
 	const ModelKindSchema = type.enumerated(...MODEL_KINDS.filter(kind => kind !== "search"));
 
 	const EffortSchema = type('"minimal" | "low" | "medium" | "high" | "xhigh" | "max"');
