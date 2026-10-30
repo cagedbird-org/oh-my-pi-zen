@@ -135,6 +135,31 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		tempDir.removeSync();
 	});
 
+	it("retries gateway HTTP/2 stream failures before output", () => {
+		const recovery = new TurnRecovery(createHost(model, modelRegistry));
+		const message = makeMessage([], model);
+		message.errorMessage = "Error Code upstream_http2_stream_error: Upstream HTTP/2 stream failed";
+
+		expect(recovery.isRetryableError(message)).toBe(true);
+	});
+
+	it("keeps stream parameter 4xx errors terminal", () => {
+		const recovery = new TurnRecovery(createHost(model, modelRegistry));
+		const message = makeMessage([], model);
+		message.errorStatus = 400;
+		message.errorMessage = "400 invalid_request_error: parameter 'stream' must be a boolean";
+
+		expect(recovery.isRetryableError(message)).toBe(false);
+	});
+
+	it("does not replay committed text after a gateway HTTP/2 stream failure", () => {
+		const recovery = new TurnRecovery(createHost(model, modelRegistry));
+		const message = makeMessage([{ type: "text", text: "Already delivered" }], model);
+		message.errorMessage = "Error Code upstream_http2_stream_error: Upstream HTTP/2 stream failed";
+
+		expect(recovery.isRetryableError(message)).toBe(false);
+	});
+
 	it("rolls back a usage fallback cancelled during model reconciliation", async () => {
 		const fallback = getBundledModel("openai", "gpt-4o-mini");
 		if (!fallback) throw new Error("Expected bundled fallback model");

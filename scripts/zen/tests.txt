@@ -19,3 +19,6 @@ packages/coding-agent/test/legacy-pi-ast-behavior.test.ts
 packages/coding-agent/test/legacy-pi-extension-cache.test.ts
 packages/coding-agent/test/extensibility/legacy-pi-inplace-load.test.ts
 packages/coding-agent/test/extensibility/legacy-pi-settings-manager.test.ts
+packages/ai/test/sub2api-errors.test.ts
+packages/ai/test/error-id.test.ts
+packages/coding-agent/test/turn-recovery-replay-unsafe.test.ts

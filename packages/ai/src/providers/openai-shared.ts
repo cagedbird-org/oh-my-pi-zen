@@ -3937,15 +3937,21 @@ export async function processResponsesStream<TApi extends Api>(
 			// Breaking unwinds the iterator chain (the consumer's `.return()`
 			// reaches the SDK stream), actively releasing the connection.
 			break;
-		} else if (event.type === "error") {
-			const err = (event as any).error ?? event;
+		} else if (event.type === "error" || (!event.type && "error" in event)) {
+			// Gateways also emit `event: error` with only `{ error: ... }` in data.
+			const nested = "error" in event ? event.error : undefined;
+			const err = (nested && typeof nested === "object" ? nested : event) as {
+				code?: string;
+				type?: string;
+				message?: string;
+			};
 			// An in-band rate-limit/overload `error` event advances the fallback chain
 			// like an HTTP-status 429 (body-error.ts); the whole event is passed so
 			// event-level status/code fields count too. Other codes keep the existing
 			// `Error Code <code>: <message>` message that error tests pin on.
 			const inBand = AIError.createInBandProviderError(event);
 			if (inBand) throw inBand;
-			const code = err.code ?? "unknown";
+			const code = err.code ?? err.type ?? "unknown";
 			const message = err.message ?? "no message";
 			throw new AIError.ProviderResponseError(`Error Code ${code}: ${message}`, {
 				provider: model.provider,

@@ -9,6 +9,7 @@ import {
 	status,
 	TRANSIENT_TRANSPORT_PATTERN,
 } from "./flags";
+import { GATEWAY_CREDENTIAL_FAILURE_PATTERN, GATEWAY_TRANSIENT_PATTERN } from "./gateway-patterns";
 
 /**
  * Whether a numeric HTTP status is in the canonical transient/retryable set:
@@ -44,6 +45,7 @@ function isTransientTransportMessage(message: string): boolean {
  */
 export function isProviderRetryableError(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
+	if (GATEWAY_CREDENTIAL_FAILURE_PATTERN.test(error.message)) return false;
 	if (isUsageLimit(error)) return false;
 	const httpStatus = status(error);
 	if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408 && httpStatus !== 429) {
@@ -56,6 +58,7 @@ export function isProviderRetryableError(error: unknown): boolean {
 		isUnexpectedSocketCloseMessage(msg) ||
 		isTransientTransportMessage(msg) ||
 		TRANSIENT_TRANSPORT_PATTERN.test(msg) ||
+		GATEWAY_TRANSIENT_PATTERN.test(msg) ||
 		CODEX_HTTP_BODY_READ_ERROR_PATTERN.test(msg) ||
 		PROVIDER_TRANSIENT_EXTRA_PATTERN.test(msg) ||
 		isTransientStreamParseError(error) ||

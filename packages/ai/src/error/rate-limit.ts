@@ -88,7 +88,7 @@ const ACCOUNT_SCOPED_403_PATTERN =
 // burn a healthy sibling credential as a false quota. "速率限制" is absent for
 // the same reason.
 const CN_QUOTA_EXHAUSTED_PATTERN =
-	/(?:使用|用量).{0,30}?上限|(?:额度|配额)已?(?:用|耗)(?:完|尽)|限额.{0,30}重置|余额不足/;
+	/(?:使用|用量).{0,30}?上限|(?:额度|配额|限额)已?(?:用|耗)(?:完|尽)|限额.{0,30}重置|余额不足/;
 // Simplified Chinese rate/concurrency caps can contain both 使用 and 上限, but
 // remain transient rather than account quota exhaustion.
 const CN_TRANSIENT_CAP_PATTERN =

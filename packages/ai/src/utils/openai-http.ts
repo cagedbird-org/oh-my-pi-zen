@@ -17,6 +17,7 @@
 import { fetchWithRetry, readSseJsonOrText, type SseEventObserver } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { OpenAIHttpError } from "../error";
+import { GATEWAY_CREDENTIAL_FAILURE_PATTERN } from "../error/gateway-patterns";
 
 export { OpenAIHttpError };
 
@@ -112,6 +113,7 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 			// recovery owns its backoff/fallback (issue #8854).
 			shouldRetryResponse: async (response, bodyText) =>
 				!isConcurrencyAdmissionRejection(response, bodyText) &&
+				!GATEWAY_CREDENTIAL_FAILURE_PATTERN.test(bodyText) &&
 				(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 			// Bun's native fetch enforces a hard ~300s pre-response timeout (issue #2422).
 			// Cold large-context streams legitimately exceed it; the caller's

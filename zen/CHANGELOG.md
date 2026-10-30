@@ -6,6 +6,8 @@
 
 - 启动时不再因插件的纯类型依赖触发自动下载而卡住；zen 扩展使用当前宿主的 SDK 状态。
   Startup no longer stalls on automatic downloads for type-only plugin dependencies; zen extensions share the current host's SDK state.
+- 中转站的 HTTP/2 流中断等临时故障会自动重试，补齐 sub2api 流内错误分类：区分额度耗尽与瞬时限流，需要管理员处理的上游凭据错误不再重试。
+  Gateway HTTP/2 stream failures and other transient sub2api in-band errors are now retried; exhausted quotas are distinguished from throttling, and upstream credential failures that need an administrator are no longer retried.
 
 ## [18.14.0-zen.1] - 2026-10-30
 

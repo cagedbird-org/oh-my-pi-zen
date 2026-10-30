@@ -7,6 +7,7 @@ import {
 	ProviderHttpError,
 	STREAM_ENVELOPE_ERROR_PREFIX,
 } from "./classes";
+import { GATEWAY_CREDENTIAL_FAILURE_PATTERN, GATEWAY_TRANSIENT_PATTERN } from "./gateway-patterns";
 import {
 	is402BillingCapBody,
 	isAccountScopedCapText,
@@ -220,14 +221,14 @@ export function isCodexSteerRejection(message: { api?: Api; errorMessage?: strin
 /**
  * Transport-failure wording that marks an error transient. Covers
  * diagnostics forwarded verbatim by gateways/proxies in other runtimes, e.g.
- * undici's "other side closed" and Go's `net.ErrClosed` ("use of closed
- * network connection", #15385). Also covers OMP's own network-failure
+ * undici's "other side closed", gateway HTTP/2 stream failures, and Go's
+ * `net.ErrClosed` ("use of closed network connection", #15385). Also covers OMP's own network-failure
  * sentences from `networkFailureMessage` (offline / unreachable / refused /
  * TLS), which must stay at least as retryable as the bare `Connection error.`
  * text they replaced.
  */
 export const TRANSIENT_TRANSPORT_PATTERN =
-	/\b(?:no[_ -]?capacity|(?:high|peak)[ _-]?demand|(?:at|over|insufficient)[ _-]?capacity|capacity[ _-]?(?:exceeded|exhausted)|peak[ _-]?load)\b|overloaded|provider.?returned.?error|rate.?limit|too many requests|auth-gateway\s+5\d{2}(?=[:\s]|$)|\b(?:429|500|502|503|504)\b|service.?unavailable|temporar(?:y|ily)[ _-]?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|unable.?to.?connect\.\s*is the computer able to access the url\?|other side closed|use of closed network connection|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|nghttp2_(?:internal_error|refused_stream)|stream closed with error code nghttp2_(?:internal_error|refused_stream)|\bE(?:TIMEOUT|NOTFOUND|NETUNREACH|HOSTUNREACH)\b|\bFailedToOpenSocket\b|no internet connection|couldn.?t reach|couldn.?t connect to|tls certificate verification failed|malformed.?function.?call/i;
+	/\b(?:no[_ -]?capacity|(?:high|peak)[ _-]?demand|(?:at|over|insufficient)[ _-]?capacity|capacity[ _-]?(?:exceeded|exhausted)|peak[ _-]?load)\b|overloaded|provider.?returned.?error|rate.?limit|too many requests|auth-gateway\s+5\d{2}(?=[:\s]|$)|\b(?:429|500|502|503|504)\b|service.?unavailable|temporar(?:y|ily)[ _-]?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|unable.?to.?connect\.\s*is the computer able to access the url\?|other side closed|use of closed network connection|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|\bupstream_http2_stream_error\b|\bHTTP\/2 stream failed\b|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|nghttp2_(?:internal_error|refused_stream)|stream closed with error code nghttp2_(?:internal_error|refused_stream)|\bE(?:TIMEOUT|NOTFOUND|NETUNREACH|HOSTUNREACH)\b|\bFailedToOpenSocket\b|no internet connection|couldn.?t reach|couldn.?t connect to|tls certificate verification failed|malformed.?function.?call/i;
 const AUTH_FAILURE_PATTERN =
 	/\b(?:401|403|unauthorized|forbidden|authentication|auth[_ ]?unavailable|no auth available|(?:invalid|no)[_ ]?api[_ ]?key)\b/i;
 const MALFORMED_FUNCTION_CALL_PATTERN =
@@ -590,6 +591,7 @@ function isTransientErrorText(text: string): boolean {
 		PYTHON_HTTP2_STREAM_RESET_PATTERN.test(text) ||
 		PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(text) ||
 		isStreamEnvelopeTruncationText(text) ||
+		GATEWAY_TRANSIENT_PATTERN.test(text) ||
 		TRANSIENT_TRANSPORT_PATTERN.test(text)
 	);
 }
@@ -644,6 +646,7 @@ function classifyText(
 	provider?: string,
 	modelId?: string,
 ): number {
+	if (errorMessage && GATEWAY_CREDENTIAL_FAILURE_PATTERN.test(errorMessage)) return create(Flag.AuthFailed);
 	let kinds = 0;
 	if (errorMessage) {
 		if (matchesOverflowText(errorMessage)) kinds |= Flag.ContextOverflow;
@@ -850,6 +853,7 @@ export function classify(error: unknown, api?: Api): number {
 				linkMessage = link.errorMessage;
 			}
 		}
+		if (linkMessage && GATEWAY_CREDENTIAL_FAILURE_PATTERN.test(linkMessage)) return create(Flag.AuthFailed);
 
 		const linkStatus = status(link);
 		const textId = classifyText(linkMessage, linkStatus ?? governingTerminalStatus, causeTokenEvidence, api);
@@ -1003,6 +1007,10 @@ export function classifyMessage(message: {
 	const existingOverflowOnly =
 		existingId !== undefined && is(existingId, Flag.ContextOverflow) && !is(existingId, Flag.PayloadRejected);
 	const classificationMessage = message.errorClassificationMessage ?? message.errorMessage;
+	if (classificationMessage && GATEWAY_CREDENTIAL_FAILURE_PATTERN.test(classificationMessage)) {
+		message.errorId = create(Flag.AuthFailed);
+		return message.errorId;
+	}
 	const textId = classifyText(
 		classificationMessage,
 		currentStatus,

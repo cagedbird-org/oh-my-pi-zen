@@ -52,6 +52,36 @@ describe("error-id classification", () => {
 	});
 
 	it.each([
+		"Error Code upstream_http2_stream_error: Upstream HTTP/2 stream failed",
+		"upstream_http2_stream_error",
+		"Upstream HTTP/2 stream failed",
+	])("retries gateway HTTP/2 transport failures on both classification paths: %s", errorMessage => {
+		for (const id of [
+			AIError.classify(message({ errorMessage })),
+			AIError.classifyMessage(message({ errorMessage })),
+		]) {
+			expect(AIError.is(id, AIError.Flag.Transient)).toBe(true);
+			expect(AIError.retriable(id)).toBe(true);
+		}
+		expect(AIError.isProviderRetryableError(new Error(errorMessage))).toBe(true);
+	});
+
+	it.each([
+		"HTTP 400 invalid_request_error: parameter 'stream' must be a boolean",
+		"HTTP 422 invalid_request_error: HTTP/2 stream option is not supported",
+		"HTTP 400 invalid_request_error: upstream_http2_stream_error: Upstream HTTP/2 stream failed",
+	])("keeps terminal stream parameter errors non-retryable on both paths: %s", errorMessage => {
+		for (const id of [
+			AIError.classify(message({ errorMessage })),
+			AIError.classifyMessage(message({ errorMessage })),
+		]) {
+			expect(AIError.is(id, AIError.Flag.Transient)).toBe(false);
+			expect(AIError.retriable(id)).toBe(false);
+		}
+		expect(AIError.isProviderRetryableError(new Error(errorMessage))).toBe(false);
+	});
+
+	it.each([
 		"Transport error reading Codex response body: error decoding response body",
 		"Anthropic stream error (api_error): Transport error reading Codex response body: error decoding response body",
 	])("retries Codex HTTP body transport failures: %s", errorMessage => {

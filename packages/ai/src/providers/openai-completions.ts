@@ -13,6 +13,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { renderDemotedThinking } from "../dialect/demotion";
 import * as AIError from "../error";
+import { GATEWAY_TRANSIENT_PATTERN } from "../error/gateway-patterns";
 import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { getKimiCommonHeaders } from "../registry/oauth/kimi";
 import { getEnvApiKey } from "../env-api-key";
@@ -804,7 +805,13 @@ function createOpenAICompletionsStreamError(chunk: unknown, provider: string): E
 		parseOpenAICompletionsErrorStatus(codeValue) ??
 		(type ? OPENAI_COMPLETIONS_ERROR_STATUS_BY_TYPE[type.toUpperCase()] : undefined);
 	if (status === undefined) {
-		return new AIError.ProviderResponseError(detail, { provider, kind: "runtime" });
+		// Retain recognized transport codes hidden by HTTP 200, while leaving
+		// unrelated validation/quota envelopes on their existing formatting path.
+		const transientCode =
+			parsed.code &&
+			(GATEWAY_TRANSIENT_PATTERN.test(parsed.code) || AIError.TRANSIENT_TRANSPORT_PATTERN.test(parsed.code));
+		const message = transientCode ? `${detail} (${parsed.code})` : detail;
+		return new AIError.ProviderResponseError(message, { provider, kind: "runtime" });
 	}
 	return new AIError.ProviderHttpError(`${status} ${detail}`, status, { code: parsed.code });
 }
