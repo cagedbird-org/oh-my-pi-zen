@@ -501,6 +501,10 @@ function collectExtensionSpecifierReferences(
 		}
 	}
 	for (const { node, scope } of collectScopedAstNodes(ast, isSpecifierReferenceNode)) {
+		// Babel marks declaration-level `import type` / `export type` on the
+		// declaration itself. Inline type specifiers can leave a runtime module
+		// edge (including side effects), so do not infer erasure from specifiers.
+		if (node.importKind === "type" || node.exportKind === "type") continue;
 		if (
 			node.type === "ImportDeclaration" ||
 			node.type === "ExportNamedDeclaration" ||
@@ -538,7 +542,7 @@ function collectExtensionSpecifierReferences(
 	return references;
 }
 
-const EXTENSION_PARSE_CACHE_SCHEMA_VERSION = 3;
+const EXTENSION_PARSE_CACHE_SCHEMA_VERSION = 4;
 const CREATE_EXTENSION_PARSE_CACHE_TABLE =
 	"CREATE TABLE IF NOT EXISTS extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_syntax INTEGER NOT NULL)";
 const EXTENSION_PARSE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
@@ -807,13 +811,15 @@ function resolveBundledVirtualSpecifier(
 // keeps plugins running against the exact runtime state of the host (single
 // module registry, single tool registry, etc.) regardless of which historical
 // scope name they happened to declare in their peerDependencies.
-const CANONICAL_PI_SCOPE = "@oh-my-pi";
+// Keep a complete package specifier so publish-time scope rewriting also
+// updates the canonical host scope without changing source-workspace imports.
+const CANONICAL_PI_SCOPE = "@oh-my-pi/pi-coding-agent".slice(0, -"/pi-coding-agent".length);
 
 // Scopes that have historically been used to publish (or alias) internal host
 // packages. `@oh-my-pi` is intentionally included so direct
 // canonical imports still pass through the same host-bundled package resolution
 // path instead of pulling a duplicate copy from plugin node_modules.
-const PI_SCOPE_ALIASES = ["oh-my-pi", "mariozechner", "earendil-works"] as const;
+const PI_SCOPE_ALIASES = ["oh-my-pi", "oh-my-pi-zen", "mariozechner", "earendil-works"] as const;
 
 // Internal host package basenames bundled inside the omp binary.
 const PI_PACKAGE_NAMES = [

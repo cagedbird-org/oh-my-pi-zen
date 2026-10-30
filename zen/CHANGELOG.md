@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 启动时不再因插件的纯类型依赖触发自动下载而卡住；zen 扩展使用当前宿主的 SDK 状态。
+  Startup no longer stalls on automatic downloads for type-only plugin dependencies; zen extensions share the current host's SDK state.
+
 ## [18.14.0-zen.1] - 2026-10-30
 
 ### Added

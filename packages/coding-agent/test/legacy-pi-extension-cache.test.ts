@@ -99,7 +99,50 @@ test("legacy extension parse cache drops obsolete CommonJS export-analysis colum
 			.map(column => column.name);
 		const schemaVersion = migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
 		expect(columns).toEqual(["cache_key", "source_type", "references", "commonjs_syntax"]);
-		expect(schemaVersion).toBe(3);
+		expect(schemaVersion).toBe(4);
+	} finally {
+		migrated.close();
+	}
+});
+
+test("invalidates schema-3 analyses that included erased type-only dependencies", async () => {
+	const tempDir = TempDir.createSync("@legacy-pi-type-only-cache-migration-");
+	tempDirs.push(tempDir);
+	const cacheRoot = tempDir.path();
+	const cachePath = path.join(cacheRoot, "omp", "cache", "legacy-pi-extension-cache.db");
+	await fs.mkdir(path.dirname(cachePath), { recursive: true });
+	const source = 'import type { Missing } from "@omp-startup-missing/types";\n';
+	const staleKey = `3:.ts:${Bun.hash(source).toString(16)}`;
+	const seed = new Database(cachePath, { create: true });
+	seed.run(
+		"CREATE TABLE extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_syntax INTEGER NOT NULL)",
+	);
+	seed.run("PRAGMA user_version = 3");
+	seed.run("INSERT INTO extension_parse_cache VALUES (?, 'module', ?, 0)", [
+		staleKey,
+		JSON.stringify([
+			{
+				kind: "import",
+				specifier: "@omp-startup-missing/types",
+				start: source.indexOf('"'),
+				end: source.lastIndexOf('"') + 1,
+			},
+		]),
+	]);
+	seed.close();
+
+	expect(await runProbe(cacheRoot, probePath, ["--type-only"])).toBe(source);
+	expect(await runProbe(cacheRoot, probePath, ["--type-only", "--expect-cache-hit"])).toBe(source);
+	const migrated = new Database(cachePath);
+	try {
+		expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(4);
+		expect(
+			migrated
+				.query<{ count: number }, [string]>(
+					"SELECT COUNT(*) AS count FROM extension_parse_cache WHERE cache_key = ?",
+				)
+				.get(staleKey)?.count,
+		).toBe(0);
 	} finally {
 		migrated.close();
 	}
@@ -139,7 +182,7 @@ test("oversized-cache eviction keeps the parse cache usable when a concurrent pr
 	seed.run(
 		"CREATE TABLE extension_parse_cache (cache_key TEXT PRIMARY KEY, source_type TEXT NOT NULL, [references] TEXT NOT NULL, commonjs_syntax INTEGER NOT NULL)",
 	);
-	seed.run("PRAGMA user_version = 3");
+	seed.run("PRAGMA user_version = 4");
 	seed.run("INSERT INTO extension_parse_cache VALUES ('big', 'module', ?, 0)", ["x".repeat(9 * 1024 * 1024)]);
 	seed.close();
 

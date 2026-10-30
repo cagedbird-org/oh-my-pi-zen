@@ -15,3 +15,7 @@ packages/natives/test/npm-packages.test.ts
 packages/natives/test/issue-823-repro.test.ts
 scripts/ci-release-publish.test.ts
 packages/coding-agent/test/export-html-template.test.ts
+packages/coding-agent/test/legacy-pi-ast-behavior.test.ts
+packages/coding-agent/test/legacy-pi-extension-cache.test.ts
+packages/coding-agent/test/extensibility/legacy-pi-inplace-load.test.ts
+packages/coding-agent/test/extensibility/legacy-pi-settings-manager.test.ts

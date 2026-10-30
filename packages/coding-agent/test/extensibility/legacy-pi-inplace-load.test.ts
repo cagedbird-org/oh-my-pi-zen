@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -38,6 +38,72 @@ async function writePackage(files: Record<string, string>): Promise<string> {
 }
 
 describe("legacy-pi in-place module loading (issue #1674)", () => {
+	it("loads erased type-only dependencies without resolving them while preserving runtime edges", async () => {
+		const source = [
+			'import type DefaultType from "@omp-startup-missing/default";',
+			'import type { HookAPI } from "@oh-my-pi-zen/pi-coding-agent/extensibility/hooks";',
+			'import type * as Types from "@omp-startup-missing/namespace";',
+			'export type { Missing } from "@omp-startup-missing/named";',
+			'export type * from "@omp-startup-missing/star";',
+			'export type * as Namespace from "@omp-startup-missing/export-namespace";',
+			'import type Required = require("@omp-startup-missing/required");',
+			'import { marker } from "@omp-startup-value/dependency";',
+			'import "@omp-startup-value/side-effect";',
+			'export { marker as reexported } from "@omp-startup-value/dependency";',
+			"export const result = marker;",
+		].join("\n");
+		const dir = await writePackage({
+			"package.json": '{"name":"type-only-startup-regression","type":"module"}',
+			"index.ts": source,
+			"value.ts": source.replace('import "@omp-startup-value/side-effect";', ""),
+			"node_modules/@omp-startup-value/dependency/package.json": JSON.stringify({
+				name: "@omp-startup-value/dependency",
+				type: "module",
+				exports: "./runtime.mjs",
+			}),
+			"node_modules/@omp-startup-value/dependency/runtime.mjs": 'export const marker = "runtime loaded";',
+			"node_modules/@omp-startup-value/side-effect/package.json": JSON.stringify({
+				name: "@omp-startup-value/side-effect",
+				type: "module",
+				exports: "./side-effect.mjs",
+			}),
+			"node_modules/@omp-startup-value/side-effect/side-effect.mjs":
+				'throw new Error("runtime side effect reached");',
+		});
+		const erasedAttempts: string[] = [];
+		const realResolveSync = Bun.resolveSync.bind(Bun);
+		const resolveSpy = spyOn(Bun, "resolveSync").mockImplementation((specifier, from) => {
+			if (specifier.startsWith("@omp-startup-missing/") || specifier.endsWith("/extensibility/hooks")) {
+				erasedAttempts.push(specifier);
+				throw new Error(`erased dependency must not be resolved: ${specifier}`);
+			}
+			return realResolveSync(specifier, from);
+		});
+		try {
+			const entry = path.join(dir, "index.ts");
+			await __rewriteLegacyExtensionSourceForTests(source, entry);
+			await __rewriteLegacyExtensionSourceForTests(source, entry);
+			const graph = await __collectLegacyPiExtensionSourcesForTests(entry);
+			const realDir = await fs.realpath(dir);
+			expect(graph.has(path.join(realDir, "node_modules/@omp-startup-value/dependency/runtime.mjs"))).toBe(true);
+			expect(graph.has(path.join(realDir, "node_modules/@omp-startup-value/side-effect/side-effect.mjs"))).toBe(
+				true,
+			);
+			// An explicit side-effect import must still execute; failure is intentional.
+			await expect(loadLegacyPiModule(entry)).rejects.toThrow("runtime side effect reached");
+			expect(erasedAttempts).toEqual([]);
+			const loaded = (await loadLegacyPiModule(path.join(dir, "value.ts"))) as {
+				result: string;
+				reexported: string;
+			};
+			expect(loaded.result).toBe("runtime loaded");
+			expect(loaded.reexported).toBe("runtime loaded");
+			expect(erasedAttempts).toEqual([]);
+		} finally {
+			resolveSpy.mockRestore();
+		}
+	});
+
 	it("resolves package patterns by prefix specificity before suffix length", async () => {
 		const dir = await writePackage({
 			"package.json": JSON.stringify({

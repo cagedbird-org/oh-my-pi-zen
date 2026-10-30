@@ -8,6 +8,7 @@ import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { ExtensionToolWrapper, wrapRegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
+import { loadLegacyPiModule } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/legacy-pi-compat";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
@@ -106,6 +107,25 @@ describe("legacy pi SettingsManager shim (issue #10397)", () => {
 		expect<Settings>(SettingsManager.create(projectDir)).toBe(singleton);
 		expect<Settings>(SettingsManager.create(projectB)).toBe(sessionB);
 		expect(SettingsManager.create(projectB).getProjectSettings().piVim).toEqual({ session: "b" });
+	});
+
+	it("shares initialized host settings through zen, canonical, and historical package scopes", async () => {
+		const singleton = await Settings.init({ cwd: projectDir, agentDir });
+		const scopes = ["@oh-my-pi-zen", "@oh-my-pi", "@mariozechner", "@earendil-works"];
+		const entries = await Promise.all(
+			scopes.map(async (scope, index) => {
+				const entry = path.join(projectDir, `scope-${index}.ts`);
+				await Bun.write(
+					entry,
+					`import { SettingsManager } from "${scope}/pi-coding-agent";\nexport const settings = SettingsManager.create(${JSON.stringify(projectDir)});`,
+				);
+				return entry;
+			}),
+		);
+		for (const entry of entries) {
+			const loaded = (await loadLegacyPiModule(entry)) as { settings: Settings };
+			expect(loaded.settings).toBe(singleton);
+		}
 	});
 
 	it("uses the active session settings when same-cwd sessions have different managers", async () => {

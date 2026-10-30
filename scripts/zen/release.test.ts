@@ -29,6 +29,90 @@ describe("publish-time identity boundary", () => {
 		expect(rewriteZenText(output)).toBe(output);
 	});
 
+	test("executes the renamed compatibility loader against the zen host registry, not plugin-local SDKs", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "zen-loader-identity-"));
+		const repoRoot = path.resolve(import.meta.dir, "../..");
+		try {
+			const hostRoot = path.join(root, "host");
+			const stagedSourceRoot = path.join(hostRoot, "packages/coding-agent/src");
+			const loaderRelative = "extensibility/plugins/legacy-pi-compat.ts";
+			const loader = path.join(stagedSourceRoot, loaderRelative);
+			await Bun.write(
+				loader,
+				rewriteZenText(await Bun.file(path.join(repoRoot, "packages/coding-agent/src", loaderRelative)).text()),
+			);
+			// Stage only the loader under test. Its unchanged dependencies remain the
+			// real workspace modules; no mock registry can hide a split host runtime.
+			const links = [
+				[path.join(repoRoot, "packages/coding-agent/src/discovery"), path.join(stagedSourceRoot, "discovery")],
+				[path.join(repoRoot, "packages/utils"), path.join(hostRoot, "node_modules/@oh-my-pi-zen/pi-utils")],
+				[path.join(repoRoot, "packages/ai"), path.join(hostRoot, "node_modules/@oh-my-pi-zen/pi-ai")],
+				[path.join(repoRoot, "node_modules/@babel/parser"), path.join(hostRoot, "node_modules/@babel/parser")],
+			];
+			for (const [target, link] of links) {
+				await fs.mkdir(path.dirname(link!), { recursive: true });
+				await fs.symlink(target!, link!, process.platform === "win32" ? "junction" : "dir");
+			}
+			const scopes = ["@oh-my-pi-zen", "@oh-my-pi", "@mariozechner", "@earendil-works"];
+			const entries: string[] = [];
+			for (const [index, scope] of scopes.entries()) {
+				const plugin = path.join(root, `plugin-${index}`);
+				const localSdk = path.join(plugin, "node_modules", scope, "pi-ai");
+				await Bun.write(
+					path.join(localSdk, "package.json"),
+					JSON.stringify({
+						name: `${scope}/pi-ai`,
+						type: "module",
+						exports: { "./api-registry": "./registry.js" },
+					}),
+				);
+				await Bun.write(path.join(localSdk, "registry.js"), 'throw new Error("plugin-local SDK loaded");');
+				const entry = path.join(plugin, "index.ts");
+				await Bun.write(entry, `export { getCustomApi, registerCustomApi } from "${scope}/pi-ai/api-registry";`);
+				entries.push(entry);
+			}
+			const probe = path.join(root, "probe.ts");
+			await Bun.write(
+				probe,
+				[
+					'import assert from "node:assert/strict";',
+					// The staged loader path is runtime-selected; this probe exercises its module boundary.
+					`const host = await import(${JSON.stringify(path.join(repoRoot, "packages/ai/src/api-registry.ts"))});`,
+					`const { loadLegacyPiModule } = await import(${JSON.stringify(loader)});`,
+					"const realResolve = Bun.resolveSync.bind(Bun);",
+					"Bun.resolveSync = (specifier, from) => {",
+					'  if (specifier.startsWith("@oh-my-pi/")) throw new Error("unrewritten canonical host scope");',
+					"  return realResolve(specifier, from);",
+					"};",
+					'const stream = () => { throw new Error("stream must not execute"); };',
+					'host.registerCustomApi("zen-host-read", stream, "zen-stage-probe");',
+					`for (const [index, entry] of ${JSON.stringify(entries)}.entries()) {`,
+					"  const loaded = await loadLegacyPiModule(entry);",
+					'  assert.equal(loaded.getCustomApi("zen-host-read")?.streamSimple, stream);',
+					'  loaded.registerCustomApi("zen-plugin-write-" + index, stream, "zen-stage-probe");',
+					'  assert.equal(host.getCustomApi("zen-plugin-write-" + index)?.streamSimple, stream);',
+					"}",
+					'console.log("zen staged host registry shared");',
+				].join("\n"),
+			);
+			const child = Bun.spawn([process.execPath, probe], {
+				cwd: root,
+				env: { ...process.env, PI_BUNDLED: "", XDG_CACHE_HOME: path.join(root, "cache") },
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			expect(exitCode, stderr).toBe(0);
+			expect(stdout.trim()).toBe("zen staged host registry shared");
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	}, 30_000);
+
 	test("pins all internal dependency protocols and strips unsupported native platforms", () => {
 		const manifest: Manifest = {
 			name: "@oh-my-pi/pi-natives",

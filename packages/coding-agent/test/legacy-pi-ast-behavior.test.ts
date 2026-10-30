@@ -41,6 +41,50 @@ afterAll(async () => {
 
 const rewriteCases: RewriteCase[] = [
 	{
+		name: "declaration-level type imports, exports, and import-equals are not resolved",
+		source: [
+			'import type DefaultType from "tracked-dep";',
+			'import type { NamedType } from "tracked-dep";',
+			'import type * as Types from "tracked-dep";',
+			'export type { Missing } from "tracked-dep";',
+			'export type * from "tracked-dep";',
+			'export type * as Namespace from "tracked-dep";',
+			'import type Required = require("tracked-dep");',
+		].join("\n"),
+		expected: () =>
+			[
+				'import type DefaultType from "tracked-dep";',
+				'import type { NamedType } from "tracked-dep";',
+				'import type * as Types from "tracked-dep";',
+				'export type { Missing } from "tracked-dep";',
+				'export type * from "tracked-dep";',
+				'export type * as Namespace from "tracked-dep";',
+				'import type Required = require("tracked-dep");',
+			].join("\n"),
+	},
+	{
+		name: "value declarations retain edges with inline type specifiers or no bindings",
+		source: [
+			'import { type TypeOnly } from "tracked-dep";',
+			'import { type MixedType, value } from "tracked-dep";',
+			'import {} from "tracked-dep";',
+			'import "tracked-dep";',
+			'export { type TypeOnly } from "tracked-dep";',
+			'export { type MixedType, value } from "tracked-dep";',
+			'export {} from "tracked-dep";',
+		].join("\n"),
+		expected: importPath =>
+			[
+				`import { type TypeOnly } from ${JSON.stringify(importPath)};`,
+				`import { type MixedType, value } from ${JSON.stringify(importPath)};`,
+				`import {} from ${JSON.stringify(importPath)};`,
+				`import ${JSON.stringify(importPath)};`,
+				`export { type TypeOnly } from ${JSON.stringify(importPath)};`,
+				`export { type MixedType, value } from ${JSON.stringify(importPath)};`,
+				`export {} from ${JSON.stringify(importPath)};`,
+			].join("\n"),
+	},
+	{
 		name: "import, re-export, dynamic import, and TS import-equals sources",
 		source: [
 			'import value from "tracked-dep";',
