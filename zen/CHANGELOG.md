@@ -8,6 +8,8 @@
   Startup no longer stalls on automatic downloads for type-only plugin dependencies; zen extensions share the current host's SDK state.
 - 中转站的 HTTP/2 流中断等临时故障会自动重试，补齐 sub2api 流内错误分类：区分额度耗尽与瞬时限流，需要管理员处理的上游凭据错误不再重试。
   Gateway HTTP/2 stream failures and other transient sub2api in-band errors are now retried; exhausted quotas are distinguished from throttling, and upstream credential failures that need an administrator are no longer retried.
+- 修复原生 task 调用把可选参数的空占位误当成显式输入而被拒绝的问题，普通子代理、seance 和批量调用都已覆盖，真正错误的参数仍会报错。
+  Native task calls no longer reject empty optional placeholders as explicit arguments across ordinary, seance, and batch spawns; genuinely invalid arguments are still refused.
 
 ## [18.14.0-zen.1] - 2026-10-30
 

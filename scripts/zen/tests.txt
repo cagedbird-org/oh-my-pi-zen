@@ -22,3 +22,4 @@ packages/coding-agent/test/extensibility/legacy-pi-settings-manager.test.ts
 packages/ai/test/sub2api-errors.test.ts
 packages/ai/test/error-id.test.ts
 packages/coding-agent/test/turn-recovery-replay-unsafe.test.ts
+packages/coding-agent/test/task/task-arguments.test.ts

@@ -92,6 +92,8 @@ With the default batched task schema, supply shared `context` and per-item `task
 
 `/model`'s Roles view can assign and persist custom role mappings such as `review`, `fast`, and `good`. Changing only the active or default session selection does not remap those roles.
 
+Native task calls normalize unused optional arguments before spawn validation, both on the flat call and on every `tasks[]` item. Nulls, empty strings, and empty selector/tool arrays mean the optional field was not supplied; for example an ordinary task may carry `sourceSession: ""` and `model: []` from a model that fills every schema property. Non-empty seance-only fields still fail on ordinary agents, and seance still requires a non-empty source session. Explicit `isolated: false` and valid output schemas such as `{}` or `false` keep their meaning. Required task inputs and non-empty invalid values are not discarded.
+
 ## User-tagged model agents
 
 Type `^` in the composer to choose a model from the same scope and ranking as the `Alt+P` session picker. Accepting a completion inserts an atomic chip showing its display name. For example, type `Have ^`, pick a model, then finish with `review this change`.
