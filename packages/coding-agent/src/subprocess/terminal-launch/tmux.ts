@@ -65,7 +65,7 @@ const launchTmux: TerminalLaunchBackend<"tmux", typeof capabilities> = async (
 	// through its configured `default-shell -c`, which may not use POSIX grammar.
 	let commandArgs: readonly string[];
 	if (request.execution === "shell") {
-		commandArgs = ["/bin/sh", "-c", quotePosixArgv(request.command)];
+		commandArgs = [process.platform === "android" ? "sh" : "/bin/sh", "-c", quotePosixArgv(request.command)];
 	} else if (request.command.length === 1) {
 		const executable = request.command[0]!;
 		if (executable.includes("=")) {
@@ -77,7 +77,7 @@ const launchTmux: TerminalLaunchBackend<"tmux", typeof capabilities> = async (
 		}
 		// env turns a one-element command into a multi-argument direct launch
 		// instead of default-shell text.
-		commandArgs = ["/usr/bin/env", "--", executable];
+		commandArgs = [process.platform === "android" ? "env" : "/usr/bin/env", "--", executable];
 	} else {
 		commandArgs = request.command;
 	}

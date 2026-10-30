@@ -42,6 +42,7 @@ describe("publish-time identity boundary", () => {
 				"@oh-my-pi/pi-natives-linux-x64": "^18.13.3",
 				"@oh-my-pi/pi-natives-darwin-arm64": "18.13.3",
 				"@oh-my-pi/pi-natives-linux-arm64": "18.13.3",
+				"@oh-my-pi/pi-natives-android-arm64": "18.13.3",
 				"@oh-my-pi/pi-natives-darwin-x64": "18.13.3",
 				"@oh-my-pi/pi-natives-win32-x64": "18.13.3",
 				"@oh-my-pi/pi-natives-win32-arm64": "18.13.3",
@@ -63,6 +64,7 @@ describe("publish-time identity boundary", () => {
 			"@oh-my-pi-zen/pi-natives-linux-x64": "18.13.3-zen.1",
 			"@oh-my-pi-zen/pi-natives-darwin-arm64": "18.13.3-zen.1",
 			"@oh-my-pi-zen/pi-natives-linux-arm64": "18.13.3-zen.1",
+			"@oh-my-pi-zen/pi-natives-android-arm64": "18.13.3-zen.1",
 		});
 		expect(() =>
 			transformManifest(
@@ -101,8 +103,9 @@ test("reads npm 11 and npm 12 pack output", () => {
 	expect(() => packedFilename("{}")).toThrow("Expected one npm pack result");
 });
 
-test("the release set contains exactly 17 approved packages including the relay leaf", () => {
-	expect(releaseNames.size).toBe(17);
+test("the release set contains exactly 18 approved packages including Android and the relay leaf", () => {
+	expect(releaseNames.size).toBe(18);
+	expect(releaseNames.has("@oh-my-pi-zen/pi-natives-android-arm64")).toBe(true);
 	expect(releaseNames.has(collabRelayName)).toBe(true);
 	expect(releaseNames.has("@oh-my-pi-zen/unapproved")).toBe(false);
 });

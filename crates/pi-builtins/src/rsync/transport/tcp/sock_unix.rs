@@ -139,7 +139,7 @@ pub(super) fn numeric_host(addr: &Addr) -> String {
 			addr.as_ptr(),
 			addr.len,
 			buf.as_mut_ptr(),
-			buf.len() as libc::socklen_t,
+			buf.len() as _,
 			std::ptr::null_mut(),
 			0,
 			libc::NI_NUMERICHOST,

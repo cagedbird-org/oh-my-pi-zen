@@ -175,6 +175,7 @@ describe("published legal payloads", () => {
 				}),
 			);
 			const manifest = await prepareNativeCorePackage(pkgDir, false);
+			expect(manifest.optionalDependencies?.["@oh-my-pi/pi-natives-android-arm64"]).toBe("15.5.15");
 			expect(manifest.files).toEqual([
 				"native/index.js",
 				"native/index.d.ts",

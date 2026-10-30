@@ -124,24 +124,31 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		expect(candidates.indexOf(versionedModern)).toBeLessThan(candidates.indexOf(buildHostModern));
 	});
 
-	it("prefers platform leaf package candidates ahead of core nativeDir candidates on npm installs", () => {
-		const leafPackageDir = "/app/node_modules/@oh-my-pi/pi-natives-linux-x64";
-		const nativeDir = "/app/node_modules/@oh-my-pi/pi-natives/native";
-		const candidates = resolveLoaderCandidates({
-			addonFilenames: getAddonFilenames({ tag: "linux-x64", arch: "x64", variant: "baseline" }),
-			isCompiledBinary: false,
-			leafPackageDir,
-			nativeDir,
-			execDir: "/app/node_modules/.bin",
-			versionedDir: "/home/u/.omp/natives/15.5.15",
-			userDataDir: "/home/u/.local/bin",
-		});
+	for (const { tag, arch, variant, filename } of [
+		{ tag: "linux-x64", arch: "x64", variant: "baseline", filename: "pi_natives.linux-x64-baseline.node" },
+		{ tag: "android-arm64", arch: "arm64", variant: null, filename: "pi_natives.android-arm64.node" },
+	] as const) {
+		it(`prefers ${tag} leaf package candidates ahead of core nativeDir candidates on npm installs`, () => {
+			const leafPackageDir = `/app/node_modules/@oh-my-pi/pi-natives-${tag}`;
+			const nativeDir = "/app/node_modules/@oh-my-pi/pi-natives/native";
+			const addonFilenames = getAddonFilenames({ tag, arch, variant });
+			expect(addonFilenames[0]).toBe(filename);
+			const candidates = resolveLoaderCandidates({
+				addonFilenames,
+				isCompiledBinary: false,
+				leafPackageDir,
+				nativeDir,
+				execDir: "/app/node_modules/.bin",
+				versionedDir: "/home/u/.omp/natives/15.5.15",
+				userDataDir: "/home/u/.local/bin",
+			});
 
-		const leafBaseline = path.join(leafPackageDir, "pi_natives.linux-x64-baseline.node");
-		const coreBaseline = path.join(nativeDir, "pi_natives.linux-x64-baseline.node");
-		expect(candidates).toContain(leafBaseline);
-		expect(candidates.indexOf(leafBaseline)).toBeLessThan(candidates.indexOf(coreBaseline));
-	});
+			const leafAddon = path.join(leafPackageDir, filename);
+			const coreAddon = path.join(nativeDir, filename);
+			expect(candidates).toContain(leafAddon);
+			expect(candidates.indexOf(leafAddon)).toBeLessThan(candidates.indexOf(coreAddon));
+		});
+	}
 
 	it("keeps Windows staging ahead of leaf package and core nativeDir candidates", () => {
 		const versionedDir = "/home/u/.omp/natives/15.5.15";

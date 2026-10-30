@@ -11,3 +11,7 @@ zen/collab-relay/relay.test.ts
 packages/coding-agent/test/modes/components/zen-stream-line-settle.test.ts
 packages/coding-agent/test/tools/agent-desktop.test.ts
 packages/coding-agent/test/zen-changelog.test.ts
+packages/natives/test/npm-packages.test.ts
+packages/natives/test/issue-823-repro.test.ts
+scripts/ci-release-publish.test.ts
+packages/coding-agent/test/export-html-template.test.ts

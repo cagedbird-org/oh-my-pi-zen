@@ -129,13 +129,14 @@ export async function runShellCommand(
 			return trimmed.length > 0 ? trimmed : undefined;
 		}
 
-		const result = await ptree.exec(["/bin/sh", "-c", command], {
+		const shell = process.platform === "android" ? "sh" : "/bin/sh";
+		const result = await ptree.exec([shell, "-c", command], {
 			cwd,
 			timeout: timeoutMs,
 			allowNonZero: true,
 			allowAbort: true,
 			detached: true,
-			subreaper: process.platform === "linux",
+			subreaper: process.platform === "linux" || process.platform === "android",
 		});
 		if (!result.ok || result.exitError?.aborted) return undefined;
 		const trimmed = result.stdout.trim();

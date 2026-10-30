@@ -51,6 +51,7 @@ export interface GenerateNpmPackagesInput {
 export const LEAF_TARGETS: readonly LeafTarget[] = [
 	{ tag: "linux-x64", os: "linux", cpu: "x64" },
 	{ tag: "linux-arm64", os: "linux", cpu: "arm64" },
+	{ tag: "android-arm64", os: "android", cpu: "arm64" },
 	{ tag: "darwin-x64", os: "darwin", cpu: "x64" },
 	{ tag: "darwin-arm64", os: "darwin", cpu: "arm64" },
 	{ tag: "win32-x64", os: "win32", cpu: "x64" },

@@ -269,6 +269,12 @@ pub(crate) fn mknodat(
 
 /// `mkfifoat(dir, name, mode)`.
 pub(crate) fn mkfifoat(dir: Option<BorrowedFd<'_>>, name: &CStr, mode: u32) -> io::Result<()> {
+	#[cfg(target_os = "android")]
+	{
+		// mkfifoat is an inline mknodat wrapper in bionic, not an exported symbol.
+		mknodat(dir, name, (mode & !libc::S_IFMT) | libc::S_IFIFO, 0)
+	}
+	#[cfg(not(target_os = "android"))]
 	check(retry(|| {
 		// SAFETY: valid C string and dirfd.
 		unsafe { libc::mkfifoat(dirfd(dir), name.as_ptr(), mode as libc::mode_t) }

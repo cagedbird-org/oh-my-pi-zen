@@ -507,11 +507,15 @@ fn helper_exited() -> io::Error {
 #[cfg(unix)]
 fn may_access(path: &Path, mode: libc::c_int) -> bool {
 	use std::os::unix::ffi::OsStrExt;
+	#[cfg(target_os = "android")]
+	const AT_EACCESS: libc::c_int = 0x200; // bionic's linux/fcntl.h; not exported by libc.
+	#[cfg(not(target_os = "android"))]
+	const AT_EACCESS: libc::c_int = libc::AT_EACCESS;
 	let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
 		return false;
 	};
 	// SAFETY: `path` is a NUL-terminated string alive for the call.
-	unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) == 0 }
+	unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, AT_EACCESS) == 0 }
 }
 
 /// Reads a whole host file. Under a cancellable scope the read goes through

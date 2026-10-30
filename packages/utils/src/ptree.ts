@@ -659,7 +659,7 @@ function spawnInternal<In extends InMask = InMask>(
 	retainFullStderr: boolean,
 ): ChildProcess<In> {
 	const { timeout = -1, signal, stderr, detached, subreaper = false, ...rest } = opts ?? {};
-	const useSubreaper = subreaper && process.platform === "linux";
+	const useSubreaper = subreaper && (process.platform === "linux" || process.platform === "android");
 	const commandEnv = rest.env ?? Bun.env;
 	const child = Bun.spawn(useSubreaper ? [process.execPath, "-e", LINUX_SUBREAPER_SCRIPT] : cmd, {
 		stdin: "ignore",

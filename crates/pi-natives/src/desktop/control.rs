@@ -516,7 +516,12 @@ impl ControlLease {
 	}
 
 	fn background() -> CoreResult<Self> {
-		Ok(Self { _escape: None, _kernel: KernelOwner::acquire()?, running: AtomicBool::new(false) })
+		Ok(Self {
+			#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+			_escape: None,
+			_kernel: KernelOwner::acquire()?,
+			running: AtomicBool::new(false),
+		})
 	}
 
 	#[cfg(not(target_os = "macos"))]

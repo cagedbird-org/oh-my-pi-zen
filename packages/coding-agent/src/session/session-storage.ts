@@ -624,7 +624,7 @@ export function tryAcquireSessionLease(sessionId: string): FileLockHandle | null
 	// filesystem; elsewhere the lock is a `flock` sidecar in that directory. The
 	// sidecars are empty and never removed: unlinking a flock file can split one
 	// lease between a holder of the old inode and a creator of a new one.
-	if (process.platform !== "linux" && process.platform !== "win32") {
+	if (process.platform !== "linux" && process.platform !== "android" && process.platform !== "win32") {
 		const dir = path.dirname(lockPath);
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 		// The test-run dir sits in the shared OS temp dir, where another local

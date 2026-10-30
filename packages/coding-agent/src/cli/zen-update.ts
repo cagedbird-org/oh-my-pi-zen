@@ -9,7 +9,12 @@ export const ZEN_PACKAGE = "@oh-my-pi-zen/pi-coding-agent";
 export const ZEN_NATIVES_PACKAGE = "@oh-my-pi-zen/pi-natives";
 
 /** Platforms the zen release publishes `@oh-my-pi-zen/pi-natives-<tag>` leaves for. */
-export const ZEN_NATIVE_TAGS: ReadonlySet<string> = new Set(["linux-x64", "darwin-arm64", "linux-arm64"]);
+export const ZEN_NATIVE_TAGS: ReadonlySet<string> = new Set([
+	"linux-x64",
+	"darwin-arm64",
+	"linux-arm64",
+	"android-arm64",
+]);
 
 /** zen releases are always npm-installable; never switch to the upstream binary channel. */
 export const ZEN_RELEASE_DIST = "npm";

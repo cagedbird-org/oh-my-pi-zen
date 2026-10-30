@@ -54,7 +54,7 @@ const DEFAULT_CONFIG_DIR: &str = ".omp";
 
 /// App name used as the XDG-root subdirectory (`$XDG_STATE_HOME/omp/`),
 /// matching `APP_NAME` in `packages/utils/src/dirs.ts`.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 const APP_NAME: &str = "omp";
 
 static INSTALL: Once = Once::new();
@@ -301,7 +301,7 @@ fn resolve_logs_dir(
 /// JS-side eligibility rules in `packages/utils/src/dirs.ts`: linux/macos,
 /// `$XDG_STATE_HOME` set, `$XDG_STATE_HOME/omp` exists on disk, and
 /// `PI_CODING_AGENT_DIR` is unset or pointing at the default agent dir.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> Option<PathBuf> {
 	let default_agent_dir = default_agent_dir(home, config_dir_override);
 	let agent_override = std::env::var_os("PI_CODING_AGENT_DIR");
@@ -314,7 +314,7 @@ fn xdg_state_logs_from_env(home: &Path, config_dir_override: Option<&OsStr>) -> 
 	)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 #[allow(clippy::missing_const_for_fn, reason = "windows/non-xdg platforms keep the signature")]
 fn xdg_state_logs_from_env(_home: &Path, _config_dir_override: Option<&OsStr>) -> Option<PathBuf> {
 	None
@@ -323,7 +323,7 @@ fn xdg_state_logs_from_env(_home: &Path, _config_dir_override: Option<&OsStr>) -
 /// Pure XDG-eligibility computation extracted for unit testing — no env
 /// reads, no fs reads. `omp_dir_exists` decides whether the candidate
 /// `<xdg_state_home>/omp` actually lives on disk.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn xdg_state_logs(
 	xdg_state_home: Option<&OsStr>,
 	agent_dir_override: Option<&OsStr>,
@@ -346,7 +346,7 @@ fn xdg_state_logs(
 	}
 	Some(omp_dir.join("logs"))
 }
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 fn default_agent_dir(home: &Path, config_dir_override: Option<&OsStr>) -> PathBuf {
 	let config_dir = config_dir_override
 		.filter(|s| !s.is_empty())
@@ -495,7 +495,7 @@ mod tests {
 		assert_eq!(dir, PathBuf::from("/tmp/pi-natives-test-home/.omp-dev/logs"));
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_ignores_empty_agent_dir_override() {
 		// An empty PI_CODING_AGENT_DIR is "unset", not a divergent override; it
@@ -526,7 +526,7 @@ mod tests {
 		assert_eq!(dir, PathBuf::from("/xdg/state/omp/logs"));
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_resolves_when_dir_exists_and_no_agent_override() {
 		let dir = xdg_state_logs(
@@ -538,7 +538,7 @@ mod tests {
 		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_skipped_when_omp_dir_missing() {
 		let dir = xdg_state_logs(
@@ -550,7 +550,7 @@ mod tests {
 		assert_eq!(dir, None);
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_skipped_when_xdg_state_home_unset_or_empty() {
 		let default_agent = Path::new("/tmp/pi-natives-test-home/.omp/agent");
@@ -558,7 +558,7 @@ mod tests {
 		assert_eq!(xdg_state_logs(Some(OsStr::new("")), None, default_agent, |_p| true), None);
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_skipped_when_agent_dir_overridden() {
 		// `PI_CODING_AGENT_DIR` pointing elsewhere mirrors the JS `isDefault ===
@@ -572,7 +572,7 @@ mod tests {
 		assert_eq!(dir, None);
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn xdg_state_logs_honored_when_agent_override_matches_default() {
 		let default_agent = std::path::absolute(Path::new("./.omp/agent")).unwrap();
@@ -585,13 +585,13 @@ mod tests {
 		assert_eq!(dir, Some(PathBuf::from("/xdg/state/omp/logs")));
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn default_agent_dir_uses_dot_omp_by_default() {
 		let dir = default_agent_dir(Path::new("/tmp/pi-natives-test-home"), None);
 		assert_eq!(dir, PathBuf::from("/tmp/pi-natives-test-home/.omp/agent"));
 	}
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 	#[test]
 	fn default_agent_dir_respects_pi_config_dir() {
 		let dir =

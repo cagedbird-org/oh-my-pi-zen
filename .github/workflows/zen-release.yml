@@ -20,9 +20,92 @@ permissions:
 
 env:
    ADDON: packages/natives/native/pi_natives.linux-x64-modern.node
+   ANDROID_ADDON: packages/natives/native/pi_natives.android-arm64.node
 
 jobs:
+   linux-addon:
+      runs-on: ubuntu-24.04
+      steps:
+         - uses: actions/checkout@v4
+         - uses: oven-sh/setup-bun@v2
+         - name: Restore bun store
+           uses: actions/cache@v4
+           with:
+              path: ~/.bun/install/cache
+              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+              restore-keys: bun-${{ runner.os }}-
+         - run: bun install --frozen-lockfile
+         - name: Restore linux addon
+           id: addon
+           uses: actions/cache@v4
+           with:
+              path: ${{ env.ADDON }}
+              key: zen-addon-linux-x64-modern-pipewire-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**') }}
+         - name: Install native build deps
+           if: steps.addon.outputs.cache-hit != 'true'
+           run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libclang-dev pkg-config cmake
+         - name: Cache cargo dependencies
+           if: steps.addon.outputs.cache-hit != 'true'
+           uses: Swatinem/rust-cache@v2
+           with:
+              shared-key: natives-linux-x64
+         - name: Build linux addon
+           if: steps.addon.outputs.cache-hit != 'true'
+           env:
+              OMP_NATIVE_FEATURES: wayland-pipewire
+              OMP_NATIVE_CARGO_PROFILE: ci
+           run: bun --cwd=packages/natives run build
+         - uses: actions/upload-artifact@v4
+           with:
+              name: zen-addon-linux-x64
+              path: ${{ env.ADDON }}
+              if-no-files-found: error
+
+   android-addon:
+      runs-on: ubuntu-24.04
+      steps:
+         - uses: actions/checkout@v4
+         - name: Restore android addon
+           id: addon
+           uses: actions/cache@v4
+           with:
+              path: ${{ env.ANDROID_ADDON }}
+              key: zen-addon-android-arm64-ndk-r30-api28-v1-${{ hashFiles('.cargo/config.toml', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**') }}
+         - uses: nttld/setup-ndk@v1
+           if: steps.addon.outputs.cache-hit != 'true'
+           id: ndk
+           with:
+              ndk-version: r30
+         - name: Install Rust target and build deps
+           if: steps.addon.outputs.cache-hit != 'true'
+           run: |
+              rustup target add aarch64-linux-android
+              sudo apt-get update && sudo apt-get install -y --no-install-recommends libclang-dev pkg-config cmake
+         - name: Cache cargo dependencies
+           if: steps.addon.outputs.cache-hit != 'true'
+           uses: Swatinem/rust-cache@v2
+           with:
+              shared-key: natives-android-arm64
+         - name: Build android addon
+           if: steps.addon.outputs.cache-hit != 'true'
+           env:
+              NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+           run: |
+              toolchain="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+              export CC_aarch64_linux_android="$toolchain/aarch64-linux-android28-clang"
+              export CXX_aarch64_linux_android="$toolchain/aarch64-linux-android28-clang++"
+              export AR_aarch64_linux_android="$toolchain/llvm-ar"
+              export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+              cargo build -p pi-natives --profile ci --target aarch64-linux-android
+              cp target/aarch64-linux-android/ci/libpi_natives.so "$ANDROID_ADDON"
+         - uses: actions/upload-artifact@v4
+           with:
+              name: zen-addon-android-arm64
+              path: ${{ env.ANDROID_ADDON }}
+              if-no-files-found: error
+
    release:
+      needs: [linux-addon, android-addon]
       runs-on: ubuntu-24.04
       # ubuntu-24.04 is Linux x64; the relay leaf is compiled for bun-linux-x64-baseline.
       steps:
@@ -33,18 +116,15 @@ jobs:
               node-version: '24'
          - name: Install OIDC-capable npm
            run: npm install --global npm@11
-
          - name: Resolve zen version
            id: meta
            env:
               ZEN_NUMBER: ${{ inputs.zen_number }}
            run: bun scripts/zen/resolve-version.ts "$ZEN_NUMBER" >> "$GITHUB_OUTPUT"
-
          - name: Validate zen release notes
            env:
               ZEN_VERSION: ${{ steps.meta.outputs.version }}
            run: bun scripts/zen/release-notes.ts "$ZEN_VERSION" > "$RUNNER_TEMP/zen-release-notes.md"
-
          - name: Restore bun store
            uses: actions/cache@v4
            with:
@@ -52,38 +132,16 @@ jobs:
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
               restore-keys: bun-${{ runner.os }}-
          - run: bun install --frozen-lockfile
-
-         - name: Restore linux addon
-           id: addon
-           uses: actions/cache@v4
+         - uses: actions/download-artifact@v4
            with:
-              path: ${{ env.ADDON }}
-              key: zen-addon-linux-x64-modern-pipewire-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**') }}
-
-         # The cached addon still links PipeWire while the npm bundle builds.
+              pattern: zen-addon-*
+              path: packages/natives/native
+              merge-multiple: true
+         # The linux addon links PipeWire while tests and the npm bundle load it.
          - name: Install pipewire runtime
            run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev
-
-         - name: Install native build deps
-           if: steps.addon.outputs.cache-hit != 'true'
-           run: sudo apt-get install -y --no-install-recommends libclang-dev pkg-config cmake
-
-         - name: Cache cargo dependencies
-           if: steps.addon.outputs.cache-hit != 'true'
-           uses: Swatinem/rust-cache@v2
-           with:
-              shared-key: natives-linux-x64
-
-         - name: Build linux addon
-           if: steps.addon.outputs.cache-hit != 'true'
-           env:
-              OMP_NATIVE_FEATURES: wayland-pipewire
-              OMP_NATIVE_CARGO_PROFILE: ci
-           run: bun --cwd=packages/natives run build
-
          - name: Zen tests
            run: bun scripts/zen/run-tests.ts
-
          - name: Stage and pack all zen packages
            env:
               ZEN_VERSION: ${{ steps.meta.outputs.version }}
@@ -92,11 +150,10 @@ jobs:
               --version "$ZEN_VERSION"
               --output "$RUNNER_TEMP/zen-publish"
               --linux-addon "$ADDON"
-
+              --android-addon "$ANDROID_ADDON"
          # All packages use npm trusted publishing (OIDC).
          - name: Publish zen packages
            run: bun scripts/zen/ci-release-publish.ts "$RUNNER_TEMP/zen-publish"
-
          - name: Create zen GitHub Release
            env:
               GH_TOKEN: ${{ github.token }}

@@ -29,7 +29,7 @@ describe("zen bun install command", () => {
 				`@oh-my-pi-zen/pi-natives-${tag}@18.14.0-zen.1`,
 			]);
 		}
-		expect([...ZEN_NATIVE_TAGS].sort()).toEqual(["darwin-arm64", "linux-arm64", "linux-x64"]);
+		expect([...ZEN_NATIVE_TAGS].sort()).toEqual(["android-arm64", "darwin-arm64", "linux-arm64", "linux-x64"]);
 		expect(ZEN_PACKAGE).toBe("@oh-my-pi-zen/pi-coding-agent");
 		expect(ZEN_NATIVES_PACKAGE).toBe("@oh-my-pi-zen/pi-natives");
 	});

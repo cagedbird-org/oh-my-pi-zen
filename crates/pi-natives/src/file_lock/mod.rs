@@ -12,16 +12,16 @@ use napi_derive::napi;
 
 use crate::js;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 mod linux;
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 mod unix;
 #[cfg(target_os = "windows")]
 mod windows;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use linux as platform;
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 use unix as platform;
 #[cfg(target_os = "windows")]
 use windows as platform;
@@ -29,7 +29,7 @@ use windows as platform;
 #[cfg(not(any(unix, target_os = "windows")))]
 compile_error!("pi-natives file locks require Unix or Windows");
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
 fn memory_lock_name(path: &str) -> String {
 	const HIGH_SEED: u64 = 0x4f4d_502d_4c4f_434b;
 	const LOW_SEED: u64 = 0x5049_2d46_494c_454c;

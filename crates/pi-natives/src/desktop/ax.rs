@@ -45,6 +45,8 @@ impl AxHandle {
 			Self::Test(_) => true,
 			#[cfg(test)]
 			Self::TestUnidentified(_) => false,
+			#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", test)))]
+			_ => match *self {},
 		}
 	}
 }
@@ -67,6 +69,8 @@ impl PartialEq for AxHandle {
 			(Self::TestUnidentified(_), Self::TestUnidentified(_)) => true,
 			#[cfg(test)]
 			_ => false,
+			#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", test)))]
+			_ => match *self {},
 		}
 	}
 }
@@ -86,6 +90,8 @@ impl Hash for AxHandle {
 			Self::Test(id) => id.hash(state),
 			#[cfg(test)]
 			Self::TestUnidentified(_) => {},
+			#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", test)))]
+			_ => match *self {},
 		}
 	}
 }

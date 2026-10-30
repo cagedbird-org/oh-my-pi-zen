@@ -34,6 +34,7 @@ import { bindingsHaveReleaseIdentity, bindingsReleaseVersion, containsVersionSta
 const SUPPORTED_PLATFORMS = [
 	"linux-x64",
 	"linux-arm64",
+	"android-arm64",
 	"darwin-x64",
 	"darwin-arm64",
 	"win32-x64",

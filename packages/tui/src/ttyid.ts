@@ -4,7 +4,7 @@ import * as os from "node:os";
 
 /** Resolve the TTY device path for stdin (fd 0) via POSIX `ttyname(3)`. */
 export function getTtyPath(): string | null {
-	if (os.platform() === "linux") {
+	if (os.platform() === "linux" || os.platform() === "android") {
 		// Linux: /proc/self/fd/0 is a symlink to /dev/pts/N
 		try {
 			const ttyPath = fs.readlinkSync("/proc/self/fd/0");

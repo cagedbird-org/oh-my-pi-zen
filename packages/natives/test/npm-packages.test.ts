@@ -62,6 +62,7 @@ describe("generated native npm leaf packages", () => {
 				"pi_natives.linux-x64-baseline.node",
 				"pi_natives.linux-x64-modern.node",
 				"pi_natives.linux-arm64.node",
+				"pi_natives.android-arm64.node",
 				"pi_natives.darwin-x64-baseline.node",
 				"pi_natives.darwin-arm64.node",
 				"pi_natives.win32-x64-baseline.node",
@@ -75,6 +76,7 @@ describe("generated native npm leaf packages", () => {
 			expect(leaves.map(leaf => leaf.tag)).toEqual([
 				"linux-x64",
 				"linux-arm64",
+				"android-arm64",
 				"darwin-x64",
 				"darwin-arm64",
 				"win32-x64",
@@ -93,6 +95,13 @@ describe("generated native npm leaf packages", () => {
 				"Notice payload\n",
 			);
 			expect("exports" in manifest).toBe(false);
+			const android = await Bun.file(path.join(packageDir, "npm/android-arm64/package.json")).json();
+			expect(android.os).toEqual(["android"]);
+			expect(android.cpu).toEqual(["arm64"]);
+			expect(android.main).toBe("./pi_natives.android-arm64.node");
+			expect(await Bun.file(path.join(packageDir, "npm/android-arm64/pi_natives.android-arm64.node")).text()).toBe(
+				"pi_natives.android-arm64.node",
+			);
 		} finally {
 			await fs.rm(packageDir, { recursive: true, force: true });
 		}
@@ -130,6 +139,7 @@ describe("generated native npm leaf packages", () => {
 			expect(leaves.filter(leaf => leaf.missing).map(leaf => leaf.tag)).toEqual([
 				"linux-x64",
 				"linux-arm64",
+				"android-arm64",
 				"darwin-x64",
 				"win32-x64",
 				"win32-arm64",

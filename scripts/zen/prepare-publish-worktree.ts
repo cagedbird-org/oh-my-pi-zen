@@ -123,9 +123,10 @@ async function prepare(): Promise<void> {
 	const version = argument("--version");
 	const output = argument("--output");
 	const addon = argument("--linux-addon");
-	if (!version || !output || !addon)
+	const androidAddon = argument("--android-addon");
+	if (!version || !output || !addon || !androidAddon)
 		throw new Error(
-			"Usage: bun scripts/zen/prepare-publish-worktree.ts --version X.Y.Z-zen.N --output <new-directory> --linux-addon <pipewire-addon.node>",
+			"Usage: bun scripts/zen/prepare-publish-worktree.ts --version X.Y.Z-zen.N --output <new-directory> --linux-addon <pipewire-addon.node> --android-addon <android-addon.node>",
 		);
 	const upstream = (await Bun.file(path.join(repoRoot, "packages/natives/package.json")).json()).version as string;
 	if (zenVersion(upstream, version.split("-zen.")[1] ?? "") !== version)
@@ -174,6 +175,7 @@ async function prepare(): Promise<void> {
 	await fs.copyFile(path.join(destination, "zen/CHANGELOG.md"), zenChangelog);
 	const stagedNative = path.join(destination, "packages/natives/native");
 	await fs.copyFile(path.resolve(addon), path.join(stagedNative, "pi_natives.linux-x64-modern.node"));
+	await fs.copyFile(path.resolve(androidAddon), path.join(stagedNative, "pi_natives.android-arm64.node"));
 	const download = await fs.mkdtemp(path.join(os.tmpdir(), "zen-official-addons-"));
 	try {
 		for (const tag of ["darwin-arm64", "linux-arm64"]) {

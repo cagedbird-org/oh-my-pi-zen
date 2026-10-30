@@ -114,7 +114,7 @@ export function stripGitRepoLocationEnv(
 // `Bun.env` is only pre-dotenv when autoloading was explicitly disabled. Linux
 // keeps the original exec environment in procfs, which is authoritative.
 function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
-	if (process.platform === "linux") {
+	if (process.platform === "linux" || process.platform === "android") {
 		try {
 			const values = new Map<string, string>();
 			for (const entry of fs.readFileSync("/proc/self/environ", "utf8").split("\0")) {

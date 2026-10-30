@@ -16,7 +16,7 @@ export const workspacePackages = [
 	"pi-agent-core",
 	"pi-coding-agent",
 ] as const;
-export const nativeTags = ["linux-x64", "darwin-arm64", "linux-arm64"] as const;
+export const nativeTags = ["linux-x64", "darwin-arm64", "linux-arm64", "android-arm64"] as const;
 export const collabWebName = "@oh-my-pi-zen/collab-web";
 export const collabRelayName = "@oh-my-pi-zen/collab-relay-linux-x64";
 export const releaseNames = new Set<string>([

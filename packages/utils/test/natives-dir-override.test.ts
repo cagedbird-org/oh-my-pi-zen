@@ -16,7 +16,7 @@ const ENV_KEYS = [
 	"XDG_STATE_HOME",
 	"XDG_CACHE_HOME",
 ] as const;
-const xdgPlatform = process.platform === "linux" || process.platform === "darwin";
+const xdgPlatform = process.platform === "linux" || process.platform === "android" || process.platform === "darwin";
 
 describe("native directory override", () => {
 	let tempRoot = "";

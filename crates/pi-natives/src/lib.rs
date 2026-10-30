@@ -31,6 +31,7 @@ pub mod applefm;
 pub mod ast;
 pub mod audio;
 pub mod block;
+#[cfg_attr(target_os = "android", path = "clipboard_android.rs")]
 pub mod clipboard;
 pub mod crash_handler;
 pub mod desktop;
