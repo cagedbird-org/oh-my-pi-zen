@@ -23,3 +23,4 @@ packages/ai/test/sub2api-errors.test.ts
 packages/ai/test/error-id.test.ts
 packages/coding-agent/test/turn-recovery-replay-unsafe.test.ts
 packages/coding-agent/test/task/task-arguments.test.ts
+packages/coding-agent/test/archive-grep.test.ts

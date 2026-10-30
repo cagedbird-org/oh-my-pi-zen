@@ -37,6 +37,15 @@ def _make_archive():
                 "prompts", {"query": query, "project": project, "limit": limit}, silent
             )
 
+        async def grep(self, query, *, project=None, limit=None, context=None,
+                       regex=None, caseSensitive=None, since=None, until=None,
+                       includeSubagents=None, silent=False):
+            return await _call("grep", {
+                "query": query, "project": project, "limit": limit, "context": context,
+                "regex": regex, "caseSensitive": caseSensitive, "since": since,
+                "until": until, "includeSubagents": includeSubagents,
+            }, silent)
+
         async def recaps(self, *, project=None, limit=None, silent=False):
             return await _call("recaps", {"project": project, "limit": limit}, silent)
 
