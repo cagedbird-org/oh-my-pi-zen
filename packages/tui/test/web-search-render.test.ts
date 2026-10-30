@@ -50,6 +50,16 @@ describe("renderSearchResult", () => {
 		await initTheme();
 	});
 
+	it.each([false, true])("shows provider warnings when expanded=%s", async expanded => {
+		const uiTheme = (await getThemeByName("dark"))!;
+		const result = buildResult("Search results");
+		result.details.response.provider = "anysearch";
+		result.details.response.warnings = [{ message: "Run /login anysearch; anonymous searches may be rate-limited." }];
+		const component = renderSearchResult(result, { expanded, isPartial: false }, uiTheme);
+		const output = component.render(120).map(line => sanitizeText(line)).join("\n");
+		expect(output).toContain("Run /login anysearch; anonymous searches may be rate-limited.");
+	});
+
 	it("renders the answer as markdown (strips ## and ** markers)", async () => {
 		const uiTheme = (await getThemeByName("dark"))!;
 		const component = renderSearchResult(buildResult(ANSWER), { expanded: true, isPartial: false }, uiTheme, {

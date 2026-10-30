@@ -215,6 +215,9 @@ export function renderSearchResult(
 			header,
 			phase: sourceCount > 0 ? "success" : "warning",
 			sections: [
+				...(response.warnings ?? []).map(warning => ({
+					content: [theme.fg("warning", replaceTabs(warning.message))],
+				})),
 				...(queryPreview
 					? [
 							{
@@ -334,6 +337,7 @@ function describeSearchResult(
 		tool: searchHead(query, `${providerLabel} · ${formatCount("source", sources.length)}`, badge),
 		tone: sources.length > 0 ? undefined : "warning",
 		body: compact([
+			...(response.warnings ?? []).map(warning => text([span(plainText(warning.message), "warning")])),
 			answer ? { ...md(plainText(answer), { title: tooltip }), key: "answer" } : noteText("No answer text returned"),
 			sources.length > 0
 				? node("col", { role: "omp.tool.files" }, sources.map(sourceRow), "sources")

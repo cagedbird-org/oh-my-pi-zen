@@ -20,6 +20,7 @@ export const SEARCH_PROVIDER_LABELS = {
 	openrouter: "OpenRouter",
 	zai: "Z.AI",
 	exa: "Exa",
+	anysearch: "AnySearch",
 	tinyfish: "TinyFish",
 	jina: "Jina",
 	kagi: "Kagi",
@@ -97,4 +98,6 @@ export interface SearchResponse {
 	requestId?: string;
 	/** Authentication mode used by the provider (e.g. oauth, api-key) */
 	authMode?: string;
+	/** Provider notices, with optional separate instructions for the model. */
+	warnings?: { message: string; modelMessage?: string }[];
 }

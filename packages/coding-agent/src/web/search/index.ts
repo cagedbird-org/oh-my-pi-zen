@@ -63,6 +63,9 @@ function formatForLLM(response: SearchResponse, notes: readonly string[] = []): 
 	for (const note of notes) {
 		parts.push(`Note: ${note}`);
 	}
+	for (const warning of response.warnings ?? []) {
+		parts.push(warning.modelMessage ?? warning.message);
+	}
 
 	if (response.answer) {
 		parts.push(response.answer);

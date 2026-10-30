@@ -13,6 +13,22 @@ function nodes(children: readonly NativeChild[] | undefined): NativeNode[] {
 }
 
 describe("web_search native view", () => {
+	it("shows the provider's user warning in the native result body", () => {
+		const message = "Run /login anysearch; anonymous searches may be rate-limited.";
+		const view = webSearchToolRenderer.describeResult({
+			content: [],
+			details: { response: {
+				provider: "anysearch",
+				sources: [{ title: "Example", url: "https://example.com" }],
+				warnings: [{ message, modelMessage: "Tell the user to log in." }],
+			} },
+		}, opts);
+		expect(nodes(view?.body)[0]).toMatchObject({
+			k: "text",
+			p: { spans: [{ t: message, s: "warning" }] },
+		});
+	});
+
 	it("heads with the query and lists sources as linked rows with a domain mark", () => {
 		const view = webSearchToolRenderer.describeResult(
 			{

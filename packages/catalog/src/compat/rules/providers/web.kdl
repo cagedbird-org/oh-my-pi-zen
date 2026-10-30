@@ -41,6 +41,13 @@ provider "web" {
 			limits
 			supports-tools #false
 		}
+		model "anysearch" name="AnySearch" {
+			reasoning #false
+			input "text"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits
+			supports-tools #false
+		}
 		model "tinyfish" name="TinyFish" {
 			reasoning #false
 			input "text"
